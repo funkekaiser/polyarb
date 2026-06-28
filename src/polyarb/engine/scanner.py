@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import signal
 from collections import Counter
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -40,6 +41,13 @@ from polyarb.sinks.notify import Notifier, NullNotifier
 from polyarb.sinks.store import OpportunityStore
 
 log = structlog.get_logger("polyarb.scanner")
+
+
+def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
+    """Whole days until each market's end_date (clamped at 0); skips markets without one."""
+    return {
+        m.condition_id: max((m.end_date - now).days, 0) for m in markets if m.end_date is not None
+    }
 
 
 class Scanner:
@@ -115,9 +123,14 @@ class Scanner:
         books = await self._fetch_books(token_ids)
         log.info("scan_fetched", events=len(events), markets=len(markets), books=len(books))
 
+        now = datetime.now(UTC)
         opps: list[Opportunity] = []
         global_snap = Snapshot(
-            books=books, markets=markets, relations=self._relations, gas=s.gas_estimate
+            books=books,
+            markets=markets,
+            relations=self._relations,
+            gas=s.gas_estimate,
+            days_to_resolution=_days_to_resolution(markets, now),
         )
         opps.extend(self._complement.detect(global_snap))
         opps.extend(self._dependency.detect(global_snap))
@@ -132,7 +145,14 @@ class Scanner:
             for market in event.markets:
                 by_condition.setdefault(market.condition_id, market)
             opps.extend(
-                self._negrisk.detect(Snapshot(books=event_books, event=event, gas=s.gas_estimate))
+                self._negrisk.detect(
+                    Snapshot(
+                        books=event_books,
+                        event=event,
+                        gas=s.gas_estimate,
+                        days_to_resolution=_days_to_resolution(event.markets, now),
+                    )
+                )
             )
 
         for opp in opps:

@@ -48,6 +48,24 @@ def test_negrisk_event_is_multi_outcome() -> None:
     assert len({o.token_id for o in outcomes}) == len(outcomes)
 
 
+def test_market_parses_end_date_and_blank() -> None:
+    from datetime import datetime
+
+    m = Market.model_validate(load("gamma_binary_market.json"))
+    assert isinstance(m.end_date, datetime)
+    # blank end date coerces to None rather than failing to parse
+    blank = Market.model_validate(
+        {
+            "id": "1",
+            "conditionId": "0x1",
+            "question": "q",
+            "clobTokenIds": '["a","b"]',
+            "endDate": "",
+        }
+    )
+    assert blank.end_date is None
+
+
 def test_order_book_best_levels_computed_by_value() -> None:
     b = OrderBook.model_validate(load("clob_book_binary.json"))
     assert isinstance(b.timestamp_ms, int)

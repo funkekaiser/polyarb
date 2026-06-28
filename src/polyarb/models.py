@@ -15,6 +15,7 @@ docs/API_NOTES.md). Notable real-API quirks these models normalize:
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
@@ -60,6 +61,7 @@ class Market(BaseModel):
     accepting_orders: bool = Field(default=True, alias="acceptingOrders")
     active: bool = True
     closed: bool = False
+    end_date: datetime | None = Field(default=None, alias="endDate")  # market resolution time
 
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod
@@ -67,7 +69,7 @@ class Market(BaseModel):
         return _parse_json_list(value)
 
     @field_validator(
-        "best_bid", "best_ask", "fee_rate", "tick_size", "min_order_size", mode="before"
+        "best_bid", "best_ask", "fee_rate", "tick_size", "min_order_size", "end_date", mode="before"
     )
     @classmethod
     def _empty_to_none(cls, value: Any) -> Any:
