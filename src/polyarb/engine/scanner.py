@@ -155,17 +155,17 @@ class Scanner:
                 realizes=opp.realizes,
                 desc=opp.description,
             )
-        by_detector = Counter(str(opp.detector) for opp in opps)
+        candidates_by_detector = Counter(str(opp.detector) for opp in opps)
         self._totals["passes"] += 1
         self._totals["candidates"] += len(opps)
         self._totals["emitted"] += len(kept)
-        for detector_name, n in by_detector.items():
+        for detector_name, n in candidates_by_detector.items():
             self._totals[f"candidates.{detector_name}"] += n
         # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / emitted.
         log.info(
             "scan_complete",
             candidates=len(opps),
-            by_detector=dict(by_detector),
+            candidates_by_detector=dict(candidates_by_detector),
             **vars(filt.stats),
         )
         return kept

@@ -19,6 +19,7 @@ from polyarb.models import DetectorKind, Event, Leg, Market, Opportunity, OrderB
 from polyarb.resolution.relations import Relation
 
 ZERO = Decimal(0)
+ONE = Decimal(1)
 BPS = Decimal(10_000)
 
 

@@ -17,12 +17,10 @@ from collections.abc import Iterator
 from decimal import Decimal
 from typing import ClassVar
 
-from polyarb.detectors.base import ZERO, Profit, Snapshot, make_opportunity
+from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import depth_at_or_better, executable_size
-
-ONE = Decimal(1)
 
 
 def dependency_profit(

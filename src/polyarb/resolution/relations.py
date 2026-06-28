@@ -151,16 +151,15 @@ def generate_ladder_relations(tags: list[MarketTags]) -> list[Relation]:
 
     # Group by (underlying_key, comparator, resolution_fingerprint) — each fingerprint cohort
     # is laddered independently so the §6 gate is enforced at generation time.
-    cohorts: dict[tuple[str, str, str], list[MarketTags]] = defaultdict(list)
+    cohorts: dict[tuple[str, Comparator, str], list[MarketTags]] = defaultdict(list)
     for t in candidates:
-        key = (t.underlying_key, str(t.comparator), t.resolution_fingerprint)
+        key = (t.underlying_key, t.comparator, t.resolution_fingerprint)
         cohorts[key].append(t)
 
     relations: list[Relation] = []
-    for (underlying_key, comparator_str, _fp), cohort in cohorts.items():
+    for (underlying_key, comparator, _fp), cohort in cohorts.items():
         if len(cohort) < 2:
             continue
-        comparator = Comparator(comparator_str)
 
         try:
             if comparator == Comparator.BY_DATE:

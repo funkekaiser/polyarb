@@ -22,11 +22,13 @@ from polyarb.models import Opportunity
 from polyarb.resolution.risk import ResolutionRisk
 
 ZERO = Decimal(0)
+_BUCKET_PRECISION = Decimal("0.01")
+_PRUNE_THRESHOLD = 10_000  # prune expired dedupe entries once the cache grows past this
 
 
 def opportunity_key(opp: Opportunity) -> str:
     """Dedupe key: same detector + markets + price bucket → considered the same opp."""
-    bucket = opp.cost.quantize(Decimal("0.01"))
+    bucket = opp.cost.quantize(_BUCKET_PRECISION)
     conditions = ",".join(sorted(opp.condition_ids))
     return f"{opp.detector}|{conditions}|{bucket}"
 
@@ -43,6 +45,10 @@ class DedupeCache:
         """True if this opp hasn't been emitted within the cooldown; records it when True."""
         key = opportunity_key(opp)
         now = self.now()
+        if len(self._seen) > _PRUNE_THRESHOLD:
+            # Bound memory on a long-running scanner: drop entries past their cooldown.
+            cutoff = now - self.cooldown_seconds
+            self._seen = {k: t for k, t in self._seen.items() if t >= cutoff}
         last = self._seen.get(key)
         if last is not None and (now - last) < self.cooldown_seconds:
             return False

@@ -29,7 +29,10 @@ def resolution_equivalence_check(venue_a_market: object, venue_b_market: object)
 
 
 class CrossVenueDetector:
-    kind: ClassVar[DetectorKind] = DetectorKind.DEPENDENCY  # placeholder; no dedicated kind yet
+    # PLACEHOLDER kind — there is no cross-venue DetectorKind yet. This detector is a stub and
+    # must NOT be added to the scanner's detector list; if it ever is, give it its own kind so
+    # logs/metrics don't mis-attribute it to `dependency`.
+    kind: ClassVar[DetectorKind] = DetectorKind.DEPENDENCY
 
     def detect(self, snap: Snapshot) -> Iterator[Opportunity]:
         raise NotImplementedError(

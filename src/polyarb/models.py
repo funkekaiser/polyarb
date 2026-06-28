@@ -29,6 +29,11 @@ def _parse_json_list(value: Any) -> Any:
     return value
 
 
+def _blank_to_none(value: Any) -> Any:
+    """Live API sends "" for some unset numeric fields; treat blank as missing."""
+    return None if value == "" else value
+
+
 class Market(BaseModel):
     """A single Polymarket market (one binary Yes/No question)."""
 
@@ -66,8 +71,7 @@ class Market(BaseModel):
     )
     @classmethod
     def _empty_to_none(cls, value: Any) -> Any:
-        # Live Gamma sometimes sends "" for unset numeric fields — treat as missing.
-        return None if value == "" else value
+        return _blank_to_none(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -170,8 +174,7 @@ class OrderBook(BaseModel):
     @field_validator("tick_size", "min_order_size", "last_trade_price", mode="before")
     @classmethod
     def _empty_to_none(cls, value: Any) -> Any:
-        # Live books sometimes send "" for these (e.g. no trades yet) — treat as missing.
-        return None if value == "" else value
+        return _blank_to_none(value)
 
     @property
     def best_bid(self) -> BookLevel | None:
