@@ -62,8 +62,10 @@ token bucket + backoff defensively (Cloudflare can still 429).
 - **feeRate by category** (verify per-market, these are category defaults):
   Crypto 0.07 · Sports 0.03 · Finance/Politics/Tech/Mentions 0.04 ·
   Economics/Culture/Weather/Other 0.05 · **Geopolitics & world events 0 (fee-free)**.
-- Pull per-market params via CLOB `getClobMarketInfo(conditionID)` (confirm exact REST path
-  in Phase 1). Rounded to 5 dp; <0.00001 USDC rounds to zero.
+- Per-market fee params come directly on the Gamma market object: `feesEnabled` (bool),
+  `feeType` (e.g. `crypto_fees_v2`, or `null` for fee-free), and `feeSchedule.rate` (the
+  taker rate). Fee-free markets have `feesEnabled:false`, `feeType:null`, `feeSchedule:null`.
+  Computed fees are rounded to 5 dp; <0.00001 USDC rounds to zero.
 - Implication for `MIN_PROFIT_BPS`: threshold should be lower for fee-free categories,
   higher for fee'd ones — derive per market from live params, per SPEC.
 
@@ -78,14 +80,19 @@ token bucket + backoff defensively (Cloudflare can still 429).
   docstring + test, per SPEC.)
 - Standard markets are independent; negRisk links all markets in an event.
 
-## Identifier model (to fully resolve in Phase 1)
+## Identifier model (RESOLVED in Phase 1 — verified against fixtures)
 
-- Event-level id: `id`. NegRisk flag lives on the event.
-- Order/quote identifier is the **token_id** (a.k.a. `tokenID` / `asset_id`) — one per
-  outcome side (YES/NO). The on-chain market is keyed by **condition_id**.
-- **OPEN ITEM:** nail down the exact `condition_id ↔ token_id` mapping and field names from
-  the Gamma market object and CLOB book responses against real fixtures in Phase 1. Do not
-  hardcode field names from this note until confirmed against a recorded payload.
+- Event-level id: `id`. NegRisk flag (`negRisk`) lives on the event AND each sub-market;
+  `negRiskMarketID` is shared across all sub-markets of a negRisk event.
+- A Gamma **market** carries `conditionId` (on-chain market key) and `clobTokenIds` — a
+  **JSON-encoded string** of `[YES_token_id, NO_token_id]`, index-aligned with `outcomes`
+  (`outcomes[0]`="Yes" → `clobTokenIds[0]`=YES token). `outcomePrices` is encoded the same
+  way. The CLOB book echoes `market` (=conditionId) and `asset_id` (=token_id).
+- A token_id is the **order/quote identifier** (a.k.a. `asset_id`), one per outcome side.
+- Quirks the models normalize (see `src/polyarb/models.py`): JSON-string list fields are
+  decoded; book `bids`/`asks` come sorted worst→best so best bid/ask are taken by value;
+  `feeSchedule.rate` → `fee_rate`; some markets omit `clobTokenIds` (not yet tradeable) and
+  some token_ids 404 on `/book`.
 
 ## WebSocket market channel
 
