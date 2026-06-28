@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from typing import Any
+from enum import StrEnum
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -167,3 +168,44 @@ class OrderBook(BaseModel):
     def best_ask(self) -> BookLevel | None:
         """Lowest-priced ask (computed by value, not list position)."""
         return min(self.asks, key=lambda level: level.price, default=None)
+
+
+class DetectorKind(StrEnum):
+    COMPLEMENT = "complement"
+    NEGRISK_BASKET = "negrisk_basket"
+    DEPENDENCY = "dependency"
+
+
+class Leg(BaseModel):
+    """One executable leg of an arbitrage (buy or sell a token at a price for a size)."""
+
+    token_id: str
+    side: Literal["buy", "sell"]
+    price: Decimal
+    size: Decimal
+    outcome: str | None = None
+
+
+class Opportunity(BaseModel):
+    """A detected structural arb, scored per unit set and net of fees + gas.
+
+    All monetary fields are *per set* (one unit of the locked position). ``executable_size``
+    is how many sets the books support; total profit = ``net_profit * executable_size``.
+    """
+
+    detector: DetectorKind
+    description: str
+    event_id: str | None = None
+    condition_ids: list[str] = Field(default_factory=list)
+    legs: list[Leg] = Field(default_factory=list)
+    cost: Decimal  # capital deployed per set
+    gross_profit: Decimal  # before fees/gas, per set
+    fees: Decimal  # total taker fees, per set
+    gas: Decimal  # gas estimate, per set
+    net_profit: Decimal  # gross - fees - gas, per set
+    net_profit_bps: Decimal  # net_profit / cost, in basis points
+    executable_size: Decimal  # sets supported by book depth
+    realizes: Literal["instant", "resolution"]
+    days_to_resolution: int | None = None
+    annualized: Decimal | None = None
+    resolution_risk: str | None = None
