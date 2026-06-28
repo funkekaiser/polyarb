@@ -62,6 +62,8 @@ SEED_RELATIONS: list[Relation] = []
 
 def add_relation(antecedent: str, consequent: str, description: str) -> Relation:
     """Declare and register a relation in the seed graph; returns it."""
+    if antecedent == consequent:
+        raise ValueError("a relation's antecedent and consequent must differ (no self-loops)")
     relation = Relation(antecedent, consequent, description)
     SEED_RELATIONS.append(relation)
     return relation
@@ -173,6 +175,8 @@ def generate_ladder_relations(tags: list[MarketTags]) -> list[Relation]:
                 ordered = sorted(cohort, key=lambda t: datetime.date.fromisoformat(t.bound))
                 for i in range(len(ordered) - 1):
                     ante, cons = ordered[i], ordered[i + 1]
+                    if ante.bound == cons.bound:
+                        continue  # same deadline → not ordered, no implication
                     relations.append(
                         Relation(
                             ante.condition_id,
@@ -186,6 +190,8 @@ def generate_ladder_relations(tags: list[MarketTags]) -> list[Relation]:
                 ordered = sorted(cohort, key=lambda t: float(t.bound))
                 for i in range(len(ordered) - 1):
                     lower, higher = ordered[i], ordered[i + 1]
+                    if float(lower.bound) == float(higher.bound):
+                        continue  # same threshold → not ordered, no implication
                     relations.append(
                         Relation(
                             higher.condition_id,
@@ -199,6 +205,8 @@ def generate_ladder_relations(tags: list[MarketTags]) -> list[Relation]:
                 ordered = sorted(cohort, key=lambda t: float(t.bound))
                 for i in range(len(ordered) - 1):
                     lower, higher = ordered[i], ordered[i + 1]
+                    if float(lower.bound) == float(higher.bound):
+                        continue  # same threshold → not ordered, no implication
                     relations.append(
                         Relation(
                             lower.condition_id,

@@ -46,10 +46,19 @@ log = structlog.get_logger("polyarb.scanner")
 
 
 def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
-    """Whole days until each market's end_date (clamped at 0); skips markets without one."""
-    return {
-        m.condition_id: max((m.end_date - now).days, 0) for m in markets if m.end_date is not None
-    }
+    """Whole days until each market's end_date (clamped at 0); skips markets without one.
+
+    Gamma usually sends an aware ISO timestamp, but the ``Z`` is optional — a naive end_date
+    would otherwise raise ``TypeError`` on subtraction and poison the whole scan pass, so we
+    treat naive timestamps as UTC.
+    """
+    out: dict[str, int] = {}
+    for m in markets:
+        if m.end_date is None:
+            continue
+        end = m.end_date if m.end_date.tzinfo is not None else m.end_date.replace(tzinfo=UTC)
+        out[m.condition_id] = max((end - now).days, 0)
+    return out
 
 
 class Scanner:

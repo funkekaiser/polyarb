@@ -29,6 +29,8 @@ it.
   quirks), dated. The build references this, not memory.
 - **`docs/RELATIONS.md`** — design spec for the logical-dependency subsystem (ladders vs
   declared DAGs, tag schema, seed relations, resolution-fingerprint gate). Mostly Phase 3.
+- **`docs/TESTING.md`** — how correctness is defined, the test-suite map, the adversarial
+  bug-hunt findings + fixes, known limitations, and where bugs are likely to hide.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
 it's an API fact). Don't copy it here.

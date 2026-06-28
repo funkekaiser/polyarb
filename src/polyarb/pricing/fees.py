@@ -27,6 +27,10 @@ def taker_fee(price: Decimal, size: Decimal, fee_rate: Decimal) -> Decimal:
     """
     if fee_rate <= ZERO or size <= ZERO:
         return ZERO
+    if price <= ZERO or price >= ONE:
+        # Fee is 0 at the bounds; outside [0,1] the parabola would go NEGATIVE (which would
+        # inflate net profit), so guard against malformed prices.
+        return ZERO
     return size * fee_rate * price * (ONE - price)
 
 

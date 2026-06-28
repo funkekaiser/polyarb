@@ -104,8 +104,11 @@ class Market(BaseModel):
 
     def yes_outcome(self) -> Outcome:
         """The YES side as a standalone Outcome (used by the NegRisk basket detector)."""
+        if not self.is_binary:
+            raise ValueError(f"yes_outcome() requires a binary market; {self.condition_id} is not")
+        name = self.group_item_title or (self.outcomes[0] if self.outcomes else "Yes")
         return Outcome(
-            name=self.group_item_title or self.outcomes[0],
+            name=name,
             token_id=self.yes_token_id,
             condition_id=self.condition_id,
             price=self.outcome_prices[0] if self.outcome_prices else None,
@@ -143,7 +146,8 @@ class Event(BaseModel):
         return self.neg_risk and len(self.markets) >= 3
 
     def outcomes(self) -> list[Outcome]:
-        return [m.yes_outcome() for m in self.markets]
+        """YES outcomes of the binary constituent markets (non-binary markets are skipped)."""
+        return [m.yes_outcome() for m in self.markets if m.is_binary]
 
 
 class BookLevel(BaseModel):
@@ -171,7 +175,7 @@ class OrderBook(BaseModel):
     @field_validator("timestamp_ms", mode="before")
     @classmethod
     def _coerce_timestamp(cls, value: Any) -> Any:
-        return int(value) if isinstance(value, str) else value
+        return int(value) if isinstance(value, str | float) else value
 
     @field_validator("tick_size", "min_order_size", "last_trade_price", mode="before")
     @classmethod

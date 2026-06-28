@@ -76,10 +76,11 @@ def make_opportunity(
 ) -> Opportunity:
     """Assemble an Opportunity, computing bps and (for resolution arbs) annualized return."""
     annualized: Decimal | None = None
-    if realizes == "resolution" and days_to_resolution and profit.cost > ZERO:
-        annualized = (profit.net_profit / profit.cost) * (
-            Decimal(365) / Decimal(days_to_resolution)
-        )
+    if realizes == "resolution" and days_to_resolution is not None and profit.cost > ZERO:
+        # days_to_resolution == 0 means "resolves today" — floor at 1 day so it annualizes to
+        # a high (not None) value and ranks near the top, and to avoid a divide-by-zero.
+        days = Decimal(max(days_to_resolution, 1))
+        annualized = (profit.net_profit / profit.cost) * (Decimal(365) / days)
     return Opportunity(
         detector=detector,
         description=description,

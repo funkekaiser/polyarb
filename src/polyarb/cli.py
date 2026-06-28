@@ -83,6 +83,7 @@ def scan(
                 await scanner.run(passes=passes, max_seconds=max_seconds or None)
             finally:
                 store.close()
+                await notifier.aclose()
 
     asyncio.run(_run())
 

@@ -43,6 +43,8 @@ class DependencyDetector:
     def detect(self, snap: Snapshot) -> Iterator[Opportunity]:
         by_condition = {m.condition_id: m for m in snap.markets}
         for relation in snap.relations:
+            if relation.antecedent_condition_id == relation.consequent_condition_id:
+                continue  # a self-loop A⇒A is not a dependency (it would mis-label a complement)
             market_a = by_condition.get(relation.antecedent_condition_id)
             market_b = by_condition.get(relation.consequent_condition_id)
             if market_a is None or market_b is None:

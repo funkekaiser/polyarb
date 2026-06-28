@@ -25,11 +25,18 @@ class Notifier(Protocol):
         """Send an alert for a detected opportunity. Must not raise."""
         ...
 
+    async def aclose(self) -> None:
+        """Release any resources (e.g. an owned HTTP client). Call on shutdown."""
+        ...
+
 
 class NullNotifier:
     """Silent notifier — the default when no alert target is configured."""
 
     async def notify(self, opp: Opportunity) -> None:
+        pass
+
+    async def aclose(self) -> None:
         pass
 
 
