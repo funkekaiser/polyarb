@@ -61,6 +61,14 @@ class Market(BaseModel):
     def _decode_json_lists(cls, value: Any) -> Any:
         return _parse_json_list(value)
 
+    @field_validator(
+        "best_bid", "best_ask", "fee_rate", "tick_size", "min_order_size", mode="before"
+    )
+    @classmethod
+    def _empty_to_none(cls, value: Any) -> Any:
+        # Live Gamma sometimes sends "" for unset numeric fields — treat as missing.
+        return None if value == "" else value
+
     @model_validator(mode="before")
     @classmethod
     def _flatten_fee_schedule(cls, data: Any) -> Any:
@@ -158,6 +166,12 @@ class OrderBook(BaseModel):
     @classmethod
     def _coerce_timestamp(cls, value: Any) -> Any:
         return int(value) if isinstance(value, str) else value
+
+    @field_validator("tick_size", "min_order_size", "last_trade_price", mode="before")
+    @classmethod
+    def _empty_to_none(cls, value: Any) -> Any:
+        # Live books sometimes send "" for these (e.g. no trades yet) — treat as missing.
+        return None if value == "" else value
 
     @property
     def best_bid(self) -> BookLevel | None:
