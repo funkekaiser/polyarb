@@ -23,7 +23,15 @@ from polyarb.detectors.negrisk_basket import NegRiskBasketDetector
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
 from polyarb.models import Market, Opportunity, OrderBook
-from polyarb.resolution.relations import SEED_RELATIONS, Relation
+from polyarb.resolution.relations import (
+    POLITICS_NESTING,
+    SEED_RELATIONS,
+    SPORTS_NESTING,
+    MarketTags,
+    Relation,
+    generate_dag_relations,
+    generate_ladder_relations,
+)
 from polyarb.resolution.risk import aggregate_risk
 from polyarb.sinks.notify import Notifier, NullNotifier
 from polyarb.sinks.store import OpportunityStore
@@ -41,13 +49,23 @@ class Scanner:
         store: OpportunityStore,
         notifier: Notifier | None = None,
         relations: list[Relation] | None = None,
+        tags: list[MarketTags] | None = None,
     ) -> None:
         self._settings = settings
         self._gamma = gamma
         self._clob = clob
         self._store = store
         self._notifier = notifier or NullNotifier()
-        self._relations = relations if relations is not None else SEED_RELATIONS
+        # Dependency edges = hand-declared relations + auto-generated ladders/DAGs from market
+        # tags (docs/RELATIONS.md). With no tags supplied the generators yield nothing, so the
+        # dependency detector stays inert until markets are tagged — declared, never inferred.
+        declared = list(relations if relations is not None else SEED_RELATIONS)
+        market_tags = tags or []
+        self._relations = (
+            declared
+            + generate_ladder_relations(market_tags)
+            + generate_dag_relations(market_tags, [*SPORTS_NESTING, *POLITICS_NESTING])
+        )
         self._complement = ComplementDetector()
         self._negrisk = NegRiskBasketDetector()
         self._dependency = DependencyDetector()
