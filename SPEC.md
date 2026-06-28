@@ -78,7 +78,7 @@ Let `a_yes`, `a_no` be best **ask** prices (what you pay to buy), `b_yes`, `b_no
   - Cost `= a_yes,B + a_no,A = a_yes,B + (1 - a_yes,A)` (approx, ignoring spread).
   - Min payoff `= 1` (the worst case is A occurs → B occurs).
   - `net_profit ≥ price(A) - price(B) - f - g` (paid at resolution).
-- The dependency graph (which markets imply which) is configured/declared, not inferred from text. Start with a small hand-curated set of relations (time-monotonic "by date X ≤ by date Y" pairs, nomination⊇presidency, championship⊆playoff-berth). Make adding a relation a one-liner.
+- The dependency graph (which markets imply which) is configured/declared, not inferred from text. Start with a small hand-curated set of relations (time-monotonic "by date X ≤ by date Y" pairs, nomination⊇presidency, championship⊆playoff-berth). Make adding a relation a one-liner. **Full design: `docs/RELATIONS.md`** — auto-generated total-order ladders vs hand-declared nesting DAGs, the market tag schema, prioritized seed relations, exclusions, and the resolution-fingerprint gate (mostly built in Phase 3).
 
 **4. Cross-venue — stub.** Define the interface and a `resolution_equivalence_check()` that must pass before any cross-venue opp is emitted. Do not implement venue #2. Leave `NotImplementedError` + a TODO explaining the resolution-mismatch and jurisdiction caveats.
 

@@ -24,6 +24,8 @@ it.
 - **`CLAUDE.md`** (this file) — session rules, commands, and the architecture mental model.
 - **`docs/API_NOTES.md`** — live-verified API facts (base URLs, quotas, fees, real-payload
   quirks), dated. The build references this, not memory.
+- **`docs/RELATIONS.md`** — design spec for the logical-dependency subsystem (ladders vs
+  declared DAGs, tag schema, seed relations, resolution-fingerprint gate). Mostly Phase 3.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
 it's an API fact). Don't copy it here.

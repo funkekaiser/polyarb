@@ -5,9 +5,16 @@ A relation ``A ⇒ B`` asserts that whenever A resolves YES, B must too — so t
 and prices the locked trade *buy YES_B + buy NO_A*.
 
 Dependencies are **declared, never inferred from text** (SPEC constraint). Relations are
-hand-curated and keyed by on-chain ``condition_id``; adding one is a one-liner via
-:func:`add_relation`. The seed list ships empty because condition_ids are
-market-instance-specific — populate it for the live markets you're tracking.
+keyed by on-chain ``condition_id``; adding one is a one-liner via :func:`add_relation`. The
+seed list ships empty because condition_ids are market-instance-specific.
+
+The full design for this subsystem is ``docs/RELATIONS.md`` — it specifies two edge
+mechanisms (auto-generated total-order *ladders* from a market tag schema, and hand-declared
+nesting *DAGs* with transitive closure), a prioritized seed set, exclusions, and the
+resolution-fingerprint gate. This module currently implements only the flat declared
+``Relation`` consumed by the dependency detector; the ladder/DAG generators and the
+fingerprint gate land in Phase 3 (they feed ``engine/filters.py``). The ``Relation`` sign
+convention here already matches RELATIONS.md §1 (``A ⇒ B`` ⟹ ``price(A) ≤ price(B)``).
 """
 
 from __future__ import annotations
