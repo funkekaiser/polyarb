@@ -18,6 +18,9 @@ dist/
 .pytest_cache/
 .hypothesis/
 
+# Recorded live samples (the curated tests/fixtures/*.json ARE committed)
+tests/fixtures/recorded/
+
 # Local data
 *.sqlite
 *.sqlite3

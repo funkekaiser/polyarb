@@ -29,5 +29,20 @@ def version() -> None:
     typer.echo(__version__)
 
 
+@app.command()
+def record(
+    output_dir: str = typer.Option(
+        "tests/fixtures/recorded",
+        "--out",
+        "-o",
+        help="Directory to write captured live samples into.",
+    ),
+) -> None:
+    """Capture live (read-only) Gamma/CLOB samples to disk for fixtures/inspection."""
+    from polyarb.recording import main as record_main
+
+    record_main(output_dir)
+
+
 if __name__ == "__main__":
     app()
