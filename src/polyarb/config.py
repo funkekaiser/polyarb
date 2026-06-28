@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # --- storage ---
     sqlite_path: str = "polyarb.db"
 
+    # --- optional Prometheus /metrics endpoint (off by default) ---
+    metrics_enabled: bool = False
+    metrics_port: int = 9090
+
     # --- execution module (GATED — leave disabled) ---
     execution_enabled: bool = False
     max_trade_notional_usdc: Decimal = Decimal(0)

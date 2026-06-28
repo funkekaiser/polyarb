@@ -78,6 +78,8 @@ from `.env.example`). No secrets are baked into the image.
 | `NOTIFIER` | `none` | Alert sink: `none`, `webhook`, `ntfy`, `discord`, or `telegram`. |
 | `NOTIFIER_URL` | _(empty)_ | Webhook/ntfy/Discord/Telegram URL when `NOTIFIER` is not `none`. |
 | `SQLITE_PATH` | `polyarb.db` | Path to the SQLite database file (in Docker: `/data/polyarb.db`). |
+| `METRICS_ENABLED` | `false` | Expose a Prometheus `/metrics` endpoint for the scanner. |
+| `METRICS_PORT` | `9090` | Port for the `/metrics` endpoint when `METRICS_ENABLED=true`. |
 | `EXECUTION_ENABLED` | `false` | **Leave `false`.** Must be `true` **and** confirmed at runtime to place any order. |
 
 Real values (especially `POLYMARKET_PRIVATE_KEY` when execution is eventually enabled) must

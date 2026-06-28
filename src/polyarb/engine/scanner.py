@@ -24,6 +24,7 @@ from polyarb.detectors.base import Snapshot
 from polyarb.detectors.complement import ComplementDetector
 from polyarb.detectors.dependency import DependencyDetector
 from polyarb.detectors.negrisk_basket import NegRiskBasketDetector
+from polyarb.engine import metrics
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
 from polyarb.models import Market, Opportunity, OrderBook
@@ -31,6 +32,7 @@ from polyarb.resolution.relations import (
     POLITICS_NESTING,
     SEED_RELATIONS,
     SPORTS_NESTING,
+    TAG_REGISTRY,
     MarketTags,
     Relation,
     generate_dag_relations,
@@ -71,7 +73,7 @@ class Scanner:
         # tags (docs/RELATIONS.md). With no tags supplied the generators yield nothing, so the
         # dependency detector stays inert until markets are tagged — declared, never inferred.
         declared = list(relations if relations is not None else SEED_RELATIONS)
-        market_tags = tags or []
+        market_tags = tags if tags is not None else TAG_REGISTRY
         self._relations = (
             declared
             + generate_ladder_relations(market_tags)
@@ -179,8 +181,11 @@ class Scanner:
         self._totals["passes"] += 1
         self._totals["candidates"] += len(opps)
         self._totals["emitted"] += len(kept)
+        metrics.SCAN_PASSES.inc()
+        metrics.EMITTED.inc(len(kept))
         for detector_name, n in candidates_by_detector.items():
             self._totals[f"candidates.{detector_name}"] += n
+            metrics.CANDIDATES.labels(detector=detector_name).inc(n)
         # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / emitted.
         log.info(
             "scan_complete",
@@ -210,6 +215,7 @@ class Scanner:
                 await self.scan_once()
             except Exception as exc:  # a bad pass must not kill the loop
                 self._totals["errors"] += 1
+                metrics.SCAN_ERRORS.inc()
                 log.error("scan_pass_failed", error=repr(exc))
             if passes and completed >= passes:
                 break

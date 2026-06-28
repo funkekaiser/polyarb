@@ -69,6 +69,11 @@ def scan(
     settings = load_settings()
     configure_logging(settings.log_level)
 
+    if settings.metrics_enabled:
+        from polyarb.engine.metrics import start_metrics_server
+
+        start_metrics_server(settings.metrics_port)
+
     async def _run() -> None:
         async with GammaClient() as gamma, ClobClient() as clob:
             store = SqliteStore(settings.sqlite_path)

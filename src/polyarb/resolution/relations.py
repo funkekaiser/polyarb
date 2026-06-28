@@ -109,6 +109,12 @@ class MarketTags:
     resolution_fingerprint: str  # settlement source + cutoff + timezone + index
 
 
+# Hand-declared market tags for ladder/DAG generation. Populate per tracked market — a
+# curation task like SEED_RELATIONS (tags are declared, never inferred from text). The
+# scanner picks these up by default to build its dependency edges.
+TAG_REGISTRY: list[MarketTags] = []
+
+
 # ---------------------------------------------------------------------------
 # Ladder generator (RELATIONS.md §2a, §3, §4)
 # ---------------------------------------------------------------------------
