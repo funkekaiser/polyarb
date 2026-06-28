@@ -1,15 +1,4 @@
-# Claude Code Kickoff — `polyarb`: Polymarket Structural-Arbitrage Scanner
-
-## How to use this file
-
-Two options:
-
-1. **Inline:** open a fresh Claude Code session in an empty directory and paste this entire file as your first message, then say: *"Execute Phase 0 only, then stop for my review."*
-2. **As a spec (preferred):** save this as `SPEC.md` in the empty repo, start Claude Code, and say: *"Read `SPEC.md`. Confirm you understand the constraints and the phase plan, then execute Phase 0 and stop."*
-
-Either way, drive it phase by phase. Do not let it build everything in one shot.
-
----
+# Polymarket Structural-Arbitrage Scanner
 
 ## Mission
 
@@ -30,7 +19,7 @@ The three structural edges to detect (math specified below):
 
 1. **Verify the live API first.** Before implementing any client, fetch and read the current docs. Do **not** trust endpoint paths, field names, auth flows, or rate limits from memory — including your own training data. Authoritative sources to read:
    - `https://docs.polymarket.com` (start at the API reference / introduction, then the Gamma, CLOB, Data, websocket, fees, and neg-risk pages)
-   - `https://github.com/Polymarket/py-clob-client` (README — confirm current methods and install)
+   - `https://github.com/Polymarket/py-sdk` (the unified SDK — README, methods, install). NOTE: the old `py-clob-client` is archived and non-functional; its replacement is `polymarket-client` (pip, beta). See `docs/API_NOTES.md`.
    - Confirm the current settlement/collateral token (USDC vs the newer pUSD) and the split/merge + NegRisk-convert mechanics from the docs.
    Write a short `docs/API_NOTES.md` capturing what you verified (base URLs, key endpoints, auth, rate limits, identifier model) with the date. The rest of the build references that file, not assumptions.
 
@@ -55,7 +44,7 @@ The three structural edges to detect (math specified below):
 - **Python 3.12**, managed with **`uv`** (`pyproject.toml`, `uv.lock`).
 - **`httpx`** (async) for Gamma/Data/CLOB REST; **`websockets`** for the CLOB feed.
 - **`pydantic` v2** for typed domain models; **`pydantic-settings`** for config.
-- **`py-clob-client`** — imported **only** inside the execution module, for order building/signing.
+- **`polymarket-client`** (the `py-sdk` unified SDK; replaces the now-archived `py-clob-client`) — imported **only** inside the execution module, for order building/signing.
 - **SQLite** (via `SQLModel` or stdlib `sqlite3`) to persist detected opportunities → enables backtest/replay and hit-rate analytics. (Make the storage layer an interface so Postgres is a drop-in later.)
 - **`structlog`** for structured JSON logging.
 - **`pytest`** + **`hypothesis`** (property-based tests for the invariant math).
@@ -152,7 +141,7 @@ polyarb/
       notify.py                # webhook/ntfy/discord (pluggable, optional)
     execution/                 # GATED — default OFF
       guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm
-      executor.py              # multi-leg submission via py-clob-client (only behind guard)
+      executor.py              # multi-leg submission via polymarket-client (only behind guard)
     cli.py                     # `scan` (dry-run default), `backtest`, `replay`, `record`
   tests/
     fixtures/                  # recorded API JSON
@@ -198,7 +187,7 @@ polyarb/
 - **DoD:** `docker compose up` runs the scanner; backtest command produces a summary over the SQLite history. **Gate.**
 
 **Phase 5 — Execution module (SCAFFOLD ONLY, default OFF). Do not enable.**
-- `execution/guard.py`: refuses unless `EXECUTION_ENABLED=true`, enforces a max-notional-per-trade cap and a global kill-switch, and requires an interactive `yes` confirmation per trade. `execution/executor.py`: multi-leg submission via `py-clob-client`, callable **only** through the guard, with FOK/IOC order types to minimize leg risk, and a `--paper` mode note (since there's no testnet, real paper = tiny live orders).
+- `execution/guard.py`: refuses unless `EXECUTION_ENABLED=true`, enforces a max-notional-per-trade cap and a global kill-switch, and requires an interactive `yes` confirmation per trade. `execution/executor.py`: multi-leg submission via `polymarket-client` (the unified `py-sdk`; `py-clob-client` is archived), callable **only** through the guard, with FOK/IOC order types to minimize leg risk, and a `--paper` mode note (since there's no testnet, real paper = tiny live orders).
 - Loud warnings in code + README. The default `scan` path must remain execution-free.
 - **DoD:** with `EXECUTION_ENABLED` unset, the executor cannot run and tests assert that. Leave it disabled. **Gate — then we stop and decide together whether to ever turn it on.**
 
@@ -218,13 +207,13 @@ Execution is a separate, default-OFF module. See SPEC.md for the math and phases
   key is touched unless EXECUTION_ENABLED=true AND a human confirms at runtime.
 - No secrets in the repo. .env.example holds placeholders only.
 - Verify API endpoints/fields/limits against live docs (docs.polymarket.com,
-  py-clob-client README) — never from memory. Keep docs/API_NOTES.md current.
+  py-sdk README; py-clob-client is archived) — never from memory. Keep docs/API_NOTES.md current.
 - Respect per-service rate limits; exponential backoff on 429.
 - Resolution risk is a first-class filter.
 - One phase at a time: lint + types + tests + commit, then stop for review.
 
 ## Stack
-Python 3.12 / uv / httpx / websockets / pydantic v2 / py-clob-client (exec only)
+Python 3.12 / uv / httpx / websockets / pydantic v2 / polymarket-client (exec only)
 / SQLite / structlog / pytest + hypothesis / ruff + mypy / Docker / GH Actions.
 
 ## Commands
