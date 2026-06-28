@@ -41,6 +41,48 @@ uv run polyarb record           # capture live samples → test fixtures
 uv run polyarb backtest         # analyze stored opportunities
 ```
 
+## Run with Docker
+
+The scanner ships as a self-contained image. SQLite history persists in a named volume so
+it survives container restarts and image rebuilds.
+
+```bash
+# Build and start the long-running scanner (read-only, scan --dry-run by default).
+docker compose -f docker/docker-compose.yml up --build
+
+# One-shot commands — container exits when the command finishes.
+docker compose -f docker/docker-compose.yml run --rm scan record
+docker compose -f docker/docker-compose.yml run --rm scan backtest
+docker compose -f docker/docker-compose.yml run --rm scan version
+```
+
+The SQLite database is stored at `/data/polyarb.db` inside the container, backed by the
+`polyarb-data` named volume. To wipe historical data: `docker compose -f docker/docker-compose.yml down -v` (destructive).
+
+**Read-only by default in Docker.** The image runs `scan --dry-run`; no order is ever
+signed or posted. `EXECUTION_ENABLED` defaults to `false` and is never set inside the
+image — see the Configuration section below.
+
+## Configuration
+
+All configuration is loaded from environment variables (or a git-ignored `.env` file copied
+from `.env.example`). No secrets are baked into the image.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `MIN_PROFIT_BPS` | `30` | Minimum net-of-fees profit in basis points before an opportunity is reported. |
+| `MIN_NOTIONAL_USDC` | `50` | Minimum executable size in USDC; opportunities below this are discarded. |
+| `EXCLUDE_AT_RISK_RESOLUTION` | `true` | Skip opportunities where resolution source is flagged as high-risk. |
+| `SCAN_INTERVAL_SECONDS` | `5` | Seconds between scanner loop iterations. |
+| `NOTIFIER` | `none` | Alert sink: `none`, `webhook`, `ntfy`, `discord`, or `telegram`. |
+| `NOTIFIER_URL` | _(empty)_ | Webhook/ntfy/Discord/Telegram URL when `NOTIFIER` is not `none`. |
+| `SQLITE_PATH` | `polyarb.db` | Path to the SQLite database file (in Docker: `/data/polyarb.db`). |
+| `EXECUTION_ENABLED` | `false` | **Leave `false`.** Must be `true` **and** confirmed at runtime to place any order. |
+
+Real values (especially `POLYMARKET_PRIVATE_KEY` when execution is eventually enabled) must
+come from the environment or a local `.env` file — never committed to the repository.
+
 ## Disclaimer
 
 Engineering guidance only, not financial advice. Whether to ever enable execution — and

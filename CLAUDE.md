@@ -14,8 +14,11 @@ constraints, the tech stack, the repository layout, and the phased plan all live
 file is the *operational* guide for a coding session; it does not restate SPEC, it points to
 it.
 
-> Status: **Phase 1 complete** (read-only clients + domain models + fixtures). Next up:
-> Phase 2 (detectors, pricing, property tests).
+> Status: **Phases 1–4 complete** — read-only clients + models, the three detectors with
+> property-tested math, the dependency ladders/DAGs (RELATIONS.md), a working
+> `scan --dry-run` (engine/filters/ranking/sinks), and hardening/analytics (Docker,
+> `backtest`/`replay`, graceful shutdown, structured logs). Remaining: **Phase 5** —
+> execution module (scaffold only, default OFF).
 
 ## Doc map — one home per fact (avoid drift)
 
@@ -56,15 +59,16 @@ uv sync --dev                                    # RUN FIRST each session / afte
 
 # Works today
 uv run polyarb version                          # smoke check
+uv run polyarb scan --dry-run                   # read-only ranked opportunity feed (default)
 uv run polyarb record [--out DIR]               # capture live (read-only) samples → fixtures
+uv run polyarb backtest                         # summarize stored opportunity history
+uv run polyarb replay                           # print stored opportunities oldest-first
 uv run pytest                                    # full suite (offline, fixture-based)
 uv run pytest tests/test_models.py::test_name    # a single test
 uv run ruff check . && uv run ruff format .      # lint + format
 uv run mypy src                                  # strict type check
 
-# Planned (later phases)
-uv run polyarb scan --dry-run                    # Phase 3: read-only ranked opportunity feed
-uv run polyarb backtest                          # Phase 4: analyze stored opportunities
+docker compose -f docker/docker-compose.yml up --build   # containerized long-running scanner
 ```
 
 ### venv: auto-sync is OFF on purpose

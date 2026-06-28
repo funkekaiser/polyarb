@@ -9,6 +9,9 @@ runs the three detectors, tags resolution risk, filters and ranks, then persists
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import signal
+from collections import Counter
 
 import httpx
 import structlog
@@ -70,6 +73,8 @@ class Scanner:
         self._negrisk = NegRiskBasketDetector()
         self._dependency = DependencyDetector()
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
+        # Cumulative metrics across passes (Prometheus /metrics could expose these later).
+        self._totals: Counter[str] = Counter()
 
     async def _fetch_books(self, token_ids: set[str]) -> dict[str, OrderBook]:
         """Fetch books concurrently; skip tokens without a live book (404) or transient errors."""
@@ -150,23 +155,48 @@ class Scanner:
                 realizes=opp.realizes,
                 desc=opp.description,
             )
-        if not kept:
-            log.info("no_opportunities_over_threshold", candidates=len(opps), **vars(filt.stats))
+        by_detector = Counter(str(opp.detector) for opp in opps)
+        self._totals["passes"] += 1
+        self._totals["candidates"] += len(opps)
+        self._totals["emitted"] += len(kept)
+        for detector_name, n in by_detector.items():
+            self._totals[f"candidates.{detector_name}"] += n
+        # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / emitted.
+        log.info(
+            "scan_complete",
+            candidates=len(opps),
+            by_detector=dict(by_detector),
+            **vars(filt.stats),
+        )
         return kept
 
     async def run(self, *, passes: int = 0, max_seconds: float | None = None) -> None:
-        """Loop ``scan_once`` on the configured interval. ``passes=0`` loops indefinitely."""
+        """Loop ``scan_once`` on the configured interval until done or signalled.
+
+        ``passes=0`` loops indefinitely. Stops cleanly on SIGINT/SIGTERM (the inter-pass
+        sleep is interruptible) so a containerised scanner shuts down gracefully.
+        """
         loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):  # not all platforms support this
+                loop.add_signal_handler(sig, stop.set)
+
         start = loop.time()
         completed = 0
-        while True:
+        while not stop.is_set():
             completed += 1
             try:
                 await self.scan_once()
             except Exception as exc:  # a bad pass must not kill the loop
+                self._totals["errors"] += 1
                 log.error("scan_pass_failed", error=repr(exc))
             if passes and completed >= passes:
-                return
+                break
             if max_seconds is not None and (loop.time() - start) >= max_seconds:
-                return
-            await asyncio.sleep(self._settings.scan_interval_seconds)
+                break
+            # Interruptible sleep: wakes early if a stop signal arrives.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=self._settings.scan_interval_seconds)
+
+        log.info("scanner_stopped", passes=completed, totals=dict(self._totals))

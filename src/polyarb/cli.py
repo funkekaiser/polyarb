@@ -57,17 +57,17 @@ def scan(
         )
 
     import asyncio
-    import logging
 
     from polyarb.clients.clob import ClobClient
     from polyarb.clients.gamma import GammaClient
     from polyarb.config import load_settings
     from polyarb.engine.scanner import Scanner
+    from polyarb.logging_setup import configure_logging
     from polyarb.sinks.notify import build_notifier
     from polyarb.sinks.store import SqliteStore
 
     settings = load_settings()
-    logging.basicConfig(level=settings.log_level.upper())
+    configure_logging(settings.log_level)
 
     async def _run() -> None:
         async with GammaClient() as gamma, ClobClient() as clob:
@@ -80,6 +80,48 @@ def scan(
                 store.close()
 
     asyncio.run(_run())
+
+
+@app.command()
+def backtest(
+    limit: int = typer.Option(10000, help="Max stored opportunities to analyze."),
+) -> None:
+    """Summarize the stored opportunity history (counts, bps stats, would-be P&L)."""
+    from polyarb.config import load_settings
+    from polyarb.engine.backtest import format_summary, summarize
+    from polyarb.sinks.store import SqliteStore
+
+    settings = load_settings()
+    store = SqliteStore(settings.sqlite_path)
+    try:
+        opps = store.recent(limit)
+    finally:
+        store.close()
+    typer.echo(format_summary(summarize(opps)))
+
+
+@app.command()
+def replay(
+    limit: int = typer.Option(50, help="Most recent stored opportunities to replay."),
+) -> None:
+    """Print stored opportunities oldest-first (a re-emit of the persisted feed)."""
+    from polyarb.config import load_settings
+    from polyarb.sinks.store import SqliteStore
+
+    settings = load_settings()
+    store = SqliteStore(settings.sqlite_path)
+    try:
+        opps = store.recent(limit)
+    finally:
+        store.close()
+    if not opps:
+        typer.echo("no stored opportunities")
+        return
+    for opp in reversed(opps):  # store.recent is newest-first; replay oldest-first
+        typer.echo(
+            f"[{opp.detector}] {opp.net_profit_bps:.1f}bps "
+            f"size={opp.executable_size} risk={opp.resolution_risk} :: {opp.description}"
+        )
 
 
 if __name__ == "__main__":

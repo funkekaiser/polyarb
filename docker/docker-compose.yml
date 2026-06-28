@@ -1,0 +1,35 @@
+# polyarb — docker-compose for the read-only scanner
+#
+# Start the long-running scanner:
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# One-shot commands (examples):
+#   docker compose -f docker/docker-compose.yml run --rm scan record
+#   docker compose -f docker/docker-compose.yml run --rm scan backtest
+#   docker compose -f docker/docker-compose.yml run --rm scan version
+#
+# The scanner is READ-ONLY by default. Execution stays off unless you
+# explicitly set EXECUTION_ENABLED=true in your .env — do not do this
+# without reading SPEC.md §"Non-negotiable constraints" first.
+
+services:
+  scan:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # Load .env from the repo root (git-ignored; copy from .env.example to create).
+    # `env_file` is optional — the image has safe defaults for all required vars.
+    env_file:
+      - path: ../.env
+        required: false
+    restart: unless-stopped
+    volumes:
+      # Named volume so SQLite history survives container restarts and rebuilds.
+      - polyarb-data:/data
+    # Default command inherited from the image: scan --dry-run
+    # Override per the one-shot examples above when needed.
+
+volumes:
+  polyarb-data:
+    # Persistent SQLite store. Survives `docker compose down`; removed only by
+    # `docker compose down -v` (destructive — you lose all historical scan data).

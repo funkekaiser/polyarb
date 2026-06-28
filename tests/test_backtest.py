@@ -1,0 +1,220 @@
+"""Offline tests for the backtest analytics module (no live API calls)."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from polyarb.engine.backtest import format_summary, summarize
+from polyarb.models import DetectorKind, Opportunity
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _opp(
+    *,
+    detector: DetectorKind = DetectorKind.COMPLEMENT,
+    net_profit_bps: str,
+    net_profit: str = "0.10",
+    executable_size: str = "100",
+    cost: str = "0.90",
+    realizes: str = "instant",
+    resolution_risk: str | None = None,
+    days_to_resolution: int | None = None,
+) -> Opportunity:
+    return Opportunity(
+        detector=detector,
+        description="t",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal(cost),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal(net_profit),
+        net_profit_bps=Decimal(net_profit_bps),
+        executable_size=Decimal(executable_size),
+        realizes=realizes,  # type: ignore[arg-type]
+        resolution_risk=resolution_risk,
+        days_to_resolution=days_to_resolution,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Empty input
+# ---------------------------------------------------------------------------
+
+
+def test_empty_input_returns_zero_summary() -> None:
+    s = summarize([])
+    assert s.total == 0
+    assert s.by_detector == {}
+    assert s.by_risk == {}
+    assert s.by_realizes == {}
+    assert s.net_bps_min == Decimal(0)
+    assert s.net_bps_median == Decimal(0)
+    assert s.net_bps_max == Decimal(0)
+    assert s.net_bps_mean == Decimal(0)
+    assert s.total_would_be_pnl == Decimal(0)
+    assert s.total_executable_notional == Decimal(0)
+    assert s.avg_days_to_resolution is None
+
+
+# ---------------------------------------------------------------------------
+# Counts
+# ---------------------------------------------------------------------------
+
+
+def test_total_count() -> None:
+    opps = [_opp(net_profit_bps="100"), _opp(net_profit_bps="200"), _opp(net_profit_bps="300")]
+    assert summarize(opps).total == 3
+
+
+def test_by_detector_counts() -> None:
+    opps = [
+        _opp(detector=DetectorKind.COMPLEMENT, net_profit_bps="100"),
+        _opp(detector=DetectorKind.COMPLEMENT, net_profit_bps="200"),
+        _opp(detector=DetectorKind.NEGRISK_BASKET, net_profit_bps="300"),
+    ]
+    s = summarize(opps)
+    assert s.by_detector == {"complement": 2, "negrisk_basket": 1}
+
+
+def test_by_risk_counts_unknown_when_none() -> None:
+    opps = [
+        _opp(net_profit_bps="100", resolution_risk="objective"),
+        _opp(net_profit_bps="200", resolution_risk=None),
+        _opp(net_profit_bps="300", resolution_risk=None),
+    ]
+    s = summarize(opps)
+    assert s.by_risk == {"objective": 1, "unknown": 2}
+
+
+def test_by_realizes_counts() -> None:
+    opps = [
+        _opp(net_profit_bps="100", realizes="instant"),
+        _opp(net_profit_bps="200", realizes="instant"),
+        _opp(net_profit_bps="300", realizes="resolution"),
+    ]
+    s = summarize(opps)
+    assert s.by_realizes == {"instant": 2, "resolution": 1}
+
+
+# ---------------------------------------------------------------------------
+# Bps statistics — odd count (median is the middle element)
+# ---------------------------------------------------------------------------
+
+
+def test_bps_stats_odd_count() -> None:
+    # sorted bps: 100, 200, 300  → median = 200, mean = 200, min = 100, max = 300
+    opps = [
+        _opp(net_profit_bps="300"),
+        _opp(net_profit_bps="100"),
+        _opp(net_profit_bps="200"),
+    ]
+    s = summarize(opps)
+    assert s.net_bps_min == Decimal("100")
+    assert s.net_bps_median == Decimal("200")
+    assert s.net_bps_max == Decimal("300")
+    assert s.net_bps_mean == Decimal("200")
+
+
+# ---------------------------------------------------------------------------
+# Bps statistics — even count (median = avg of two middles)
+# ---------------------------------------------------------------------------
+
+
+def test_bps_stats_even_count() -> None:
+    # sorted bps: 100, 200, 300, 400  → median = (200+300)/2 = 250, mean = 250
+    opps = [
+        _opp(net_profit_bps="400"),
+        _opp(net_profit_bps="100"),
+        _opp(net_profit_bps="300"),
+        _opp(net_profit_bps="200"),
+    ]
+    s = summarize(opps)
+    assert s.net_bps_min == Decimal("100")
+    assert s.net_bps_median == Decimal("250")
+    assert s.net_bps_max == Decimal("400")
+    assert s.net_bps_mean == Decimal("250")
+
+
+# ---------------------------------------------------------------------------
+# P&L and notional
+# ---------------------------------------------------------------------------
+
+
+def test_total_would_be_pnl() -> None:
+    # opp A: net_profit=0.10 * size=100 = 10
+    # opp B: net_profit=0.20 * size=50  = 10
+    # total = 20
+    opps = [
+        _opp(net_profit_bps="100", net_profit="0.10", executable_size="100"),
+        _opp(net_profit_bps="200", net_profit="0.20", executable_size="50"),
+    ]
+    s = summarize(opps)
+    assert s.total_would_be_pnl == Decimal("20.00")
+
+
+def test_total_executable_notional() -> None:
+    # opp A: cost=0.90 * size=100 = 90
+    # opp B: cost=0.50 * size=200 = 100
+    # total = 190
+    opps = [
+        _opp(net_profit_bps="100", cost="0.90", executable_size="100"),
+        _opp(net_profit_bps="200", cost="0.50", executable_size="200"),
+    ]
+    s = summarize(opps)
+    assert s.total_executable_notional == Decimal("190.00")
+
+
+# ---------------------------------------------------------------------------
+# avg_days_to_resolution
+# ---------------------------------------------------------------------------
+
+
+def test_avg_days_averages_only_opps_with_days() -> None:
+    # Only the two with days_to_resolution contribute: (10 + 20) / 2 = 15
+    opps = [
+        _opp(net_profit_bps="100", days_to_resolution=10),
+        _opp(net_profit_bps="200", days_to_resolution=20),
+        _opp(net_profit_bps="300", days_to_resolution=None),
+    ]
+    s = summarize(opps)
+    assert s.avg_days_to_resolution == pytest.approx(15.0)
+
+
+def test_avg_days_none_when_no_opp_has_days() -> None:
+    opps = [
+        _opp(net_profit_bps="100", days_to_resolution=None),
+        _opp(net_profit_bps="200", days_to_resolution=None),
+    ]
+    assert summarize(opps).avg_days_to_resolution is None
+
+
+# ---------------------------------------------------------------------------
+# format_summary
+# ---------------------------------------------------------------------------
+
+
+def test_format_summary_returns_nonempty_string_with_total() -> None:
+    opps = [_opp(net_profit_bps="500")]
+    result = format_summary(summarize(opps))
+    assert isinstance(result, str)
+    assert len(result) > 0
+    assert "1" in result  # total appears somewhere
+
+
+def test_format_summary_empty_input() -> None:
+    result = format_summary(summarize([]))
+    assert isinstance(result, str)
+    assert "0" in result
+
+
+def test_format_summary_contains_detector_name() -> None:
+    opps = [_opp(detector=DetectorKind.NEGRISK_BASKET, net_profit_bps="300")]
+    result = format_summary(summarize(opps))
+    assert "negrisk_basket" in result
