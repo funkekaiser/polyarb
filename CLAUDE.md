@@ -52,6 +52,8 @@ and wait for the user's go-ahead. Do not start the next phase unprompted.
 ## Commands
 
 ```bash
+uv sync --dev                                    # RUN FIRST each session / after dep changes
+
 # Works today
 uv run polyarb version                          # smoke check
 uv run polyarb record [--out DIR]               # capture live (read-only) samples → fixtures
@@ -65,8 +67,17 @@ uv run polyarb scan --dry-run                    # Phase 3: read-only ranked opp
 uv run polyarb backtest                          # Phase 4: analyze stored opportunities
 ```
 
-If the editable install ever breaks (import of `polyarb` fails after a sync that changed the
-package's files), recover with `rm -rf .venv && uv sync --dev`. CI is unaffected (fresh installs).
+### venv: auto-sync is OFF on purpose
+
+`uv run`'s auto-sync rebuilds the editable install on every `pyproject.toml` mtime change,
+and that rebuild has a ~2 ms window where `polyarb.pth` is unlinked then recopied — a
+concurrent `uv run` (or one started during the window) misses it and `import polyarb` fails.
+To kill the race, `UV_NO_SYNC=1` (in `.claude/settings.json`) and `link-mode = "copy"` (in
+`uv.toml`) are set, so `uv run` never auto-rebuilds.
+
+Consequence: **the venv no longer self-heals.** You must `uv sync --dev` yourself at session
+start and after any dependency change — otherwise a stale/missing venv stays broken. If an
+import still breaks, recover with `rm -rf .venv && uv sync --dev`. CI is unaffected (fresh installs).
 
 ## Architecture (mental model — full tree is in SPEC.md)
 

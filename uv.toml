@@ -1,0 +1,11 @@
+# uv project-level configuration.
+# See https://docs.astral.sh/uv/reference/settings/ for all options.
+
+# Use file copies rather than hardlinks when installing from the uv cache.
+# This avoids a class of APFS-hardlink race conditions where two concurrent
+# uv processes race on the same inode and one unlinks the cache entry while
+# the other is still referencing it.  Copies are written atomically via a
+# temp-file-then-rename so the installed file is never in a partially-written
+# state.  The cost is slightly more disk I/O during installs; for a dev venv
+# this is negligible.
+link-mode = "copy"
