@@ -20,7 +20,7 @@ from polyarb.sinks.notify import NullNotifier
 from polyarb.sinks.store import SqliteStore
 
 
-def _market(condition_id: str, yes: str, no: str) -> dict:
+def _market(condition_id: str, yes: str, no: str, *, accepting: bool = True) -> dict:
     return {
         "id": "10",
         "conditionId": condition_id,
@@ -30,6 +30,7 @@ def _market(condition_id: str, yes: str, no: str) -> dict:
         "active": True,
         "closed": False,
         "negRisk": False,
+        "acceptingOrders": accepting,
         "orderPriceMinTickSize": 0.01,
         "orderMinSize": 5,
     }
@@ -60,11 +61,13 @@ def _book(asset_id: str, *, ask: str, bid: str) -> dict:
     }
 
 
-def _transport(books: dict[str, dict]) -> httpx.MockTransport:
+def _transport(books: dict[str, dict], events: list[dict] | None = None) -> httpx.MockTransport:
+    _events = events if events is not None else EVENTS
+
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/events":
-            return httpx.Response(200, json=EVENTS)
+            return httpx.Response(200, json=_events)
         if path == "/book":
             token = request.url.params.get("token_id", "")
             if token in books:
@@ -85,8 +88,8 @@ def _settings() -> Settings:
     )
 
 
-def _run_scan(books: dict[str, dict]) -> tuple[list, SqliteStore]:
-    transport = _transport(books)
+def _run_scan(books: dict[str, dict], events: list[dict] | None = None) -> tuple[list, SqliteStore]:
+    transport = _transport(books, events)
     store = SqliteStore(":memory:")
 
     async def go() -> list:
@@ -164,3 +167,29 @@ def test_instant_arbs_are_resolution_risk_free() -> None:
 
     assert resolution_risk_for(instant, by_condition) == ResolutionRisk.OBJECTIVE
     assert resolution_risk_for(held, by_condition) == ResolutionRisk.ELEVATED
+
+
+def test_scanner_skips_paused_market() -> None:
+    """A market with acceptingOrders=False must not produce any opportunities.
+
+    The books show a clear complement-under arb (YES ask 0.40 + NO ask 0.50 = 0.90),
+    but the market is paused, so the scanner must exclude it during discovery.
+    """
+    paused_events = [
+        {
+            "id": "2",
+            "title": "Paused event",
+            "negRisk": False,
+            "active": True,
+            "closed": False,
+            "markets": [_market("0xP", "PY", "PN", accepting=False)],
+        }
+    ]
+    books = {
+        "PY": _book("PY", ask="0.40", bid="0.30"),
+        "PN": _book("PN", ask="0.50", bid="0.40"),
+    }
+    opps, store = _run_scan(books, paused_events)
+    assert opps == []
+    assert store.count() == 0
+    store.close()

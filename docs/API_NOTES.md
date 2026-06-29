@@ -79,6 +79,17 @@ token bucket + backoff defensively (Cloudflare can still 429).
   basket through the standard order books, not from convert.** (Encode this in code +
   docstring + test, per SPEC.)
 - Standard markets are independent; negRisk links all markets in an event.
+- **Merge of a single constituent's YES+NO → $1 is valid and FEE-FREE** (verified 2026-06-29
+  against `NegRiskAdapter.sol`, Polymarket/neg-risk-ctf-adapter). The YES/NO of one NegRisk
+  constituent *are* genuine CTF complementary pairs; `NegRiskAdapter.mergePositions` returns
+  exactly the merged `amount` in USDC with **no protocol fee** — the `feeBips` charge applies
+  only to `convertPositions`, not to merge. **Consequence: the complement-arb cost model
+  `profit = 1 − cost − fees − gas` is correct for NegRisk constituents; do NOT exclude them.**
+  Phase-5 (execution) caveats only: the merge must call `NegRiskAdapter.mergePositions`
+  (Polygon `0x59c8b7221766b8f06c8484d9b679fa0ac72050d7`), **not** the CTF directly, and it
+  costs slightly more gas (an extra internal `wcol.unwrap`) — a per-execution gas model should
+  use a higher constant for `negRisk` markets. Merge is still a single, instant tx (no
+  resolution wait).
 
 ## Identifier model (RESOLVED in Phase 1 — verified against fixtures)
 

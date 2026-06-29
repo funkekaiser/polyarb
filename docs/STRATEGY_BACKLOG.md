@@ -20,7 +20,7 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 
 | # | Str | Sev | Issue | Fix direction | Status |
 |---|-----|-----|-------|---------------|--------|
-| B1 | B,C,D | HIGH | **Sizing never walks past top-of-book** — each detector passes the *best* price as the depth limit, so `executable_size` = thinnest leg's *top level only*. Systematically under-sizes and drops real basket arbs. (`TESTING.md §5`'s "upper bound" note is backwards — it's a conservative lower bound.) | Walk legs jointly; accumulate size while combined VWAP still clears `MIN_PROFIT_BPS`; recompute net/bps from VWAP. | open |
+| B1 | B,C,D | HIGH | **Sizing never walks past top-of-book** — each detector passes the *best* price as the depth limit, so `executable_size` = thinnest leg's *top level only*. Systematically under-sizes and drops real basket arbs. (`TESTING.md §5`'s "upper bound" note is backwards — it's a conservative lower bound.) | Walk legs jointly; accumulate size while combined VWAP still clears `MIN_PROFIT_BPS`; recompute net/bps from VWAP. | **complement: done (2026-06-29)** — joint depth-walk (`walk_buy_legs`/`walk_sell_legs` in `pricing/sizing.py`) captures all profitable depth at VWAP economics; basket/dependency B1 still open (can reuse `walk_buy_legs`) |
 | B2 | ✶ | HIGH | **Gas is a no-op and mis-modeled.** `gas_estimate=0` by default → "net of gas" does nothing. And gas is folded **per-set** then gated per-set, so a real `1000·$0.02 − $5` arb is rejected. | Nonzero default; gate/rank on total economics `size·(gross−fees) − gas`, not per-set. | **done (2026-06-29)** — gas modeled per-execution; gate/rank on total $ via `total_net_profit` + gas-adjusted bps |
 | B3 | B | MED | **Overpriced-basket dual undetected** — `Σ NO < N−1` (buy every NO) is a structural edge we miss entirely. | Add the dual + property test (same exhaustiveness precondition as A1). | open |
 
@@ -44,8 +44,34 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 | D4 | C | MED | **Instant complement arbs are resolution-risk-gated/ranked** though they never reach resolution — can discard risk-free money. | Short-circuit `resolution_risk` to OBJECTIVE/n-a for `realizes=="instant"`; exempt from the AT_RISK drop. | **done** (2026-06-29) — `resolution_risk_for()` tags instant arbs OBJECTIVE |
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded void exposure (`1−Π(1−pᵢ)`); per-leg `min_order_size`/tick not enforced; no adverse-selection haircut; no deterministic final tiebreak. | Address alongside C2 (risk) / B1 (sizing). | open |
 
-## Focus
+## Complement bulletproofing — committee re-check (2026-06-29)
 
-Per "perfect one thing first," the candidate first target is the **NegRisk basket** (SPEC's
-highest-value strategy and where A1/A2/A3/B1/B2 all converge) — make its "guaranteed $1"
-*actually* guaranteed before touching the others. Decision pending (see the session summary).
+We chose to perfect **complement** first (it's immune to the Tier-A resolution risks). After
+D4/B2/B1, a 2-seat Opus committee confirmed the **identity + walk math is correct**. Outcomes:
+
+**Fixed (this pass):**
+- `accepting_orders` now gates discovery — paused/halting markets no longer emit unfillable arbs.
+- Crossed-book guard — skip a market if either YES/NO book has `bid ≥ ask` (stale/erroneous data).
+- Non-positive prices filtered in the depth-walk (bad-payload guard).
+- Gas-negative emission suppressed in the detector (guard, not `continue` — keeps under/over independent).
+
+**Verified, no change needed:**
+- **NegRisk-constituent merge** (committee #4): confirmed from `NegRiskAdapter.sol` that YES+NO of one
+  constituent merges 1:1 to $1 with **no protocol fee** → complement's cost model is correct; do NOT
+  exclude NegRisk markets. (Recorded in `docs/API_NOTES.md`, dated.)
+
+**Deferred (conservative false-negatives / Phase-5 — do NOT fabricate profit):**
+
+| # | Issue | Why deferred | Fix direction |
+|---|-------|--------------|---------------|
+| C-defer-1 | Greedy walk dilutes blended bps below `MIN_PROFIT_BPS` → whole opp filtered | Drops money, never fabricates; fix couples walk to threshold+gas | Size to max `total_net` s.t. aggregate bps ≥ threshold |
+| C-defer-2 | Cross-leg staleness (A3 also applies to complement) | Broader A3 feature | Reject when the two legs' `timestamp_ms` skew beyond a budget; prefer WS |
+| C-defer-3 | `Leg.price` is VWAP, not worst-fill | Phase-5 executor concern; detection economics are correct | Carry worst-acceptable price / level schedule for the executor |
+| C-defer-4 | NegRisk merge routing + higher gas | Phase-5 execution only | Route merge via `NegRiskAdapter`; higher per-exec gas constant for `negRisk` |
+| C-defer-5 | `min_order_size`/tick not enforced in the walk (D5); 1e-28 VWAP rounding | Negligible / venue-min concern | Floor to `min_order_size`; thread exact walk totals if ever needed |
+
+## Focus (next, after complement)
+
+The next strategy to perfect is the **NegRisk basket** (SPEC's highest-value strategy, where
+A1/A2/A3/B1/B2 converge) — make its "guaranteed $1" *actually* guaranteed (exhaustiveness +
+void handling) before touching dependency.

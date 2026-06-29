@@ -18,9 +18,24 @@ from decimal import Decimal
 from typing import ClassVar
 
 from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
-from polyarb.models import DetectorKind, Leg, Opportunity
+from polyarb.models import BookLevel, DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import depth_at_or_better, executable_size
+from polyarb.pricing.sizing import walk_buy_legs, walk_sell_legs
+
+
+def _is_crossed(book_levels_bid: list[BookLevel], book_levels_ask: list[BookLevel]) -> bool:
+    """Return True if the book is crossed (best bid >= best ask).
+
+    A crossed book signals stale or erroneous data; both legs are required to be present.
+    Non-positive prices are ignored (they are bad-payload artefacts, not real quotes).
+    """
+    bids = [lvl for lvl in book_levels_bid if lvl.size > ZERO and lvl.price > ZERO]
+    asks = [lvl for lvl in book_levels_ask if lvl.size > ZERO and lvl.price > ZERO]
+    if not bids or not asks:
+        return False
+    best_bid = max(bids, key=lambda lvl: lvl.price)
+    best_ask = min(asks, key=lambda lvl: lvl.price)
+    return best_bid.price >= best_ask.price
 
 
 def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal) -> Profit:
@@ -50,19 +65,21 @@ class ComplementDetector:
             no_book = snap.books.get(market.no_token_id)
             if yes_book is None or no_book is None:
                 continue
+            # Fix 2: skip markets with a crossed book (stale/erroneous data).
+            if _is_crossed(yes_book.bids, yes_book.asks) or _is_crossed(no_book.bids, no_book.asks):
+                continue
             fee_rate = fee_rate_for(market)
 
-            # Under: buy both asks, merge.
-            a_yes, a_no = yes_book.best_ask, no_book.best_ask
-            if a_yes is not None and a_no is not None:
-                profit = under_profit(a_yes.price, a_no.price, fee_rate)
-                if profit.net_profit > ZERO:
-                    size = executable_size(
-                        [
-                            depth_at_or_better(yes_book, "buy", a_yes.price),
-                            depth_at_or_better(no_book, "buy", a_no.price),
-                        ]
-                    )
+            # Under: buy both asks across all profitable depth, merge.
+            size, leg_costs, fees = walk_buy_legs([yes_book.asks, no_book.asks], fee_rate)
+            if size > ZERO:
+                cost_ps = sum(leg_costs, ZERO) / size
+                profit = Profit(cost=cost_ps, gross_profit=ONE - cost_ps, fees=fees / size)
+                # Fix 4: emit only when the trade clears the fixed per-execution gas cost.
+                # Use a guard, NOT `continue` — `continue` would also skip the over branch
+                # below (currently harmless since under/over are mutually exclusive on a
+                # non-crossed book, but the guard keeps that independence explicit).
+                if size * profit.net_profit - snap.gas > ZERO:
                     yield make_opportunity(
                         detector=self.kind,
                         description=f"complement under: {market.question}",
@@ -71,15 +88,15 @@ class ComplementDetector:
                             Leg(
                                 token_id=market.yes_token_id,
                                 side="buy",
-                                price=a_yes.price,
-                                size=ONE,
+                                price=leg_costs[0] / size,
+                                size=size,
                                 outcome="Yes",
                             ),
                             Leg(
                                 token_id=market.no_token_id,
                                 side="buy",
-                                price=a_no.price,
-                                size=ONE,
+                                price=leg_costs[1] / size,
+                                size=size,
                                 outcome="No",
                             ),
                         ],
@@ -89,17 +106,13 @@ class ComplementDetector:
                         gas=snap.gas,
                     )
 
-            # Over: split collateral, sell both bids.
-            b_yes, b_no = yes_book.best_bid, no_book.best_bid
-            if b_yes is not None and b_no is not None:
-                profit = over_profit(b_yes.price, b_no.price, fee_rate)
-                if profit.net_profit > ZERO:
-                    size = executable_size(
-                        [
-                            depth_at_or_better(yes_book, "sell", b_yes.price),
-                            depth_at_or_better(no_book, "sell", b_no.price),
-                        ]
-                    )
+            # Over: split collateral across all profitable depth, sell both bids.
+            size, leg_proceeds, fees = walk_sell_legs([yes_book.bids, no_book.bids], fee_rate)
+            if size > ZERO:
+                proceeds_ps = sum(leg_proceeds, ZERO) / size
+                profit = Profit(cost=ONE, gross_profit=proceeds_ps - ONE, fees=fees / size)
+                # Fix 4: emit only when the trade clears the fixed per-execution gas cost.
+                if size * profit.net_profit - snap.gas > ZERO:
                     yield make_opportunity(
                         detector=self.kind,
                         description=f"complement over: {market.question}",
@@ -108,15 +121,15 @@ class ComplementDetector:
                             Leg(
                                 token_id=market.yes_token_id,
                                 side="sell",
-                                price=b_yes.price,
-                                size=ONE,
+                                price=leg_proceeds[0] / size,
+                                size=size,
                                 outcome="Yes",
                             ),
                             Leg(
                                 token_id=market.no_token_id,
                                 side="sell",
-                                price=b_no.price,
-                                size=ONE,
+                                price=leg_proceeds[1] / size,
+                                size=size,
                                 outcome="No",
                             ),
                         ],

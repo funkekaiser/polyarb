@@ -301,3 +301,32 @@ def test_b2_gas_per_execution_not_per_set() -> None:
     # Per-set net_profit is unchanged regardless of size or gas
     assert opp_small.net_profit == Decimal("0.02")
     assert opp_large.net_profit == Decimal("0.02")
+
+
+# ── Committee follow-up: Fix 4 — detector suppresses gas-negative opps ───────────────────
+
+
+def test_complement_detector_suppresses_gas_negative_opp() -> None:
+    """ComplementDetector must not emit an opp whose total net is wiped out by gas.
+
+    Setup: YES ask 0.499, NO ask 0.500 → net_profit = 0.001/set, size = 100.
+    With gas=$5: total_net = 100 * 0.001 - 5 = 0.1 - 5 = -4.9 < 0 → suppressed.
+    With gas=$0: total_net = 0.1 > 0 → emitted.
+    """
+    from polyarb.detectors.complement import ComplementDetector
+
+    market = make_market("0xG", yes="GY", no="GN", fee_rate=None)
+    books = {
+        "GY": make_book("GY", asks=[("0.499", "100")], bids=[("0.10", "50")]),
+        "GN": make_book("GN", asks=[("0.500", "100")], bids=[("0.10", "50")]),
+    }
+
+    # Gas high enough to wipe the edge entirely → nothing emitted.
+    snap_with_gas = Snapshot(markets=[market], books=books, gas=Decimal("5"))
+    assert list(ComplementDetector().detect(snap_with_gas)) == []
+
+    # Drop gas to zero → the thin edge survives and an opp is emitted.
+    snap_no_gas = Snapshot(markets=[market], books=books, gas=ZERO)
+    opps = list(ComplementDetector().detect(snap_no_gas))
+    under_opps = [o for o in opps if "under" in o.description]
+    assert len(under_opps) == 1

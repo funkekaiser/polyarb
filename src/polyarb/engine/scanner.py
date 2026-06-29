@@ -141,6 +141,7 @@ class Scanner:
                     market.is_binary
                     and market.active
                     and not market.closed
+                    and market.accepting_orders
                     and market.condition_id not in seen
                 ):
                     markets.append(market)
