@@ -118,16 +118,32 @@ bug) and the websocket async-generator leaking a connection if abandoned mid-str
 The emit loop also now guards each opp's store/notify independently, and the scanner's stop
 log reports `attempts` (not a count that contradicted `totals["passes"]`).
 
+### Detector hardening — the "sizing-walks-only-top-of-book" critique, resolved across all three
+
+The committee's top strategy critique (naive best-price sizing; no gas-realizability gate; no
+crossed-book/staleness guard) is now closed for every active detector. complement was done
+first (`walk_buy_legs`/`walk_sell_legs`, `is_crossed`, the `size * net_profit - gas > 0`
+guard); negrisk_basket and dependency now match that bar. Shared plumbing: `is_crossed` lives
+in `pricing/sizing.py` and `walk_buy_legs` takes a per-leg fee sequence (legs spanning
+different markets/fee categories price each leg at its own rate). The depth-walk + crossed +
+gas guards are pinned as regressions in `tests/test_bugfixes.py` for both detectors.
+
 ## 5. Known limitations we deliberately did **not** "fix"
 
 These are real, but they're either correct-by-design or better handled elsewhere. Listed so
 you can revisit deliberately.
 
-- **Executable size ignores cross-leg price impact.** `size = min(per-leg depth at that
-  leg's best price)`. Filling the thin leg can push other legs to worse prices, so the figure
-  is an *upper bound*. This matches SPEC's definition; `MIN_NOTIONAL` partially compensates.
-  To improve: walk the books jointly and compute the size at which the *combined* VWAP still
-  clears the threshold. (`pricing/sizing.py`.)
+- **Executable size now reflects a joint depth-walk** (was: best-price-only). All three active
+  detectors (complement, negrisk_basket, dependency) size via `walk_buy_legs`/`walk_sell_legs`
+  (`pricing/sizing.py`): they fill each leg level-by-level cheapest-first and include only the
+  sets whose *combined VWAP* (net of per-leg fees) still clears `payoff`, and emit only when
+  the realized size clears the fixed per-execution gas cost. Caveat (committee, 2026-06-29):
+  this is the size realizable against a **static snapshot** — book-mechanical leg independence
+  (separate CLOB books) is *not* execution independence. Real fills are sequential; between
+  lifting leg 1 and leg N the other legs can move or vanish (leg risk / adverse selection), so
+  the full-walk size is an **optimistic ceiling**, worse as N and levels-consumed grow. Tracked
+  as open risk (STRATEGY_BACKLOG C1-atomicity / A3 staleness). (`depth_at_or_better` /
+  `executable_size` remain for any single-leg callers.)
 - **NegRisk basket can emit a sub-cent edge from Decimal artifacts** (e.g. three `1/3`s sum
   to `0.999…9`). Real book prices are tick-quantized so this needs pathological inputs, and
   the engine's `MIN_PROFIT_BPS` filter drops it. If you ever call detectors without the

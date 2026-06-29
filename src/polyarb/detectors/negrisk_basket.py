@@ -21,9 +21,9 @@ from decimal import Decimal
 from typing import ClassVar
 
 from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
-from polyarb.models import DetectorKind, Leg, Opportunity, OrderBook
+from polyarb.models import BookLevel, DetectorKind, Leg, Opportunity, OrderBook
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import depth_at_or_better, executable_size
+from polyarb.pricing.sizing import is_crossed, walk_buy_legs
 
 
 def basket_profit(asks: list[Decimal], fee_rates: list[Decimal]) -> Profit:
@@ -52,36 +52,47 @@ class NegRiskBasketDetector:
         if event is None or not event.is_multi_outcome:
             return
 
-        legs: list[Leg] = []
-        asks: list[Decimal] = []
+        token_ids: list[str] = []
+        outcomes: list[str] = []
+        ask_levels: list[list[BookLevel]] = []
         fee_rates: list[Decimal] = []
-        depths: list[Decimal] = []
         condition_ids: list[str] = []
 
         for market in event.markets:
             if not market.is_binary:
                 return  # not a clean YES/NO basket; skip the whole event
             book: OrderBook | None = snap.books.get(market.yes_token_id)
-            ask = book.best_ask if book is not None else None
-            if book is None or ask is None:
+            if book is None or book.best_ask is None:
                 return  # cannot lock the basket without every leg's YES ask
-            asks.append(ask.price)
+            if is_crossed(book):
+                return  # stale/erroneous data; skip the whole event
+            token_ids.append(market.yes_token_id)
+            outcomes.append(market.group_item_title or market.outcomes[0])
+            ask_levels.append(book.asks)
             fee_rates.append(fee_rate_for(market))
-            depths.append(depth_at_or_better(book, "buy", ask.price))
             condition_ids.append(market.condition_id)
-            legs.append(
-                Leg(
-                    token_id=market.yes_token_id,
-                    side="buy",
-                    price=ask.price,
-                    size=ONE,
-                    outcome=market.group_item_title or market.outcomes[0],
-                )
-            )
 
-        profit = basket_profit(asks, fee_rates)
-        if profit.net_profit <= ZERO:
+        # Depth-walk across every outcome's YES asks: buy one share of each per set; exactly
+        # one outcome pays 1 at resolution, so a completed set is worth payoff=1.
+        size, leg_costs, fees = walk_buy_legs(ask_levels, fee_rates, payoff=ONE)
+        if size <= ZERO:
             return
+        cost_ps = sum(leg_costs, ZERO) / size
+        profit = Profit(cost=cost_ps, gross_profit=ONE - cost_ps, fees=fees / size)
+        # Emit only when the trade clears the fixed per-execution gas cost.
+        if size * profit.net_profit - snap.gas <= ZERO:
+            return
+
+        legs = [
+            Leg(
+                token_id=token_ids[i],
+                side="buy",
+                price=leg_costs[i] / size,
+                size=size,
+                outcome=outcomes[i],
+            )
+            for i in range(len(token_ids))
+        ]
 
         days = next(
             (
@@ -97,7 +108,7 @@ class NegRiskBasketDetector:
             condition_ids=condition_ids,
             legs=legs,
             profit=profit,
-            executable_size=executable_size(depths),
+            executable_size=size,
             realizes="resolution",
             event_id=event.id,
             days_to_resolution=days,

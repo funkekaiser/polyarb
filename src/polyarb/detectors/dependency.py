@@ -21,7 +21,7 @@ from typing import ClassVar
 from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import depth_at_or_better, executable_size
+from polyarb.pricing.sizing import is_crossed, walk_buy_legs
 
 
 def dependency_profit(
@@ -56,26 +56,26 @@ class DependencyDetector:
             yes_b_book = snap.books.get(market_b.yes_token_id)
             if no_a_book is None or yes_b_book is None:
                 continue
-            a_no_a = no_a_book.best_ask
-            a_yes_b = yes_b_book.best_ask
-            if a_no_a is None or a_yes_b is None:
+            if no_a_book.best_ask is None or yes_b_book.best_ask is None:
+                continue
+            if is_crossed(no_a_book) or is_crossed(yes_b_book):
+                continue  # stale/erroneous data; skip this relation
+
+            # Depth-walk both legs (YES_B, NO_A): buy one share of each per set; the worst case
+            # (A occurs ⇒ B occurs) guarantees a completed set is worth payoff=1.
+            size, leg_costs, fees = walk_buy_legs(
+                [yes_b_book.asks, no_a_book.asks],
+                [fee_rate_for(market_b), fee_rate_for(market_a)],
+                payoff=ONE,
+            )
+            if size <= ZERO:
+                continue
+            cost_ps = sum(leg_costs, ZERO) / size
+            profit = Profit(cost=cost_ps, gross_profit=ONE - cost_ps, fees=fees / size)
+            # Emit only when the trade clears the fixed per-execution gas cost.
+            if size * profit.net_profit - snap.gas <= ZERO:
                 continue
 
-            profit = dependency_profit(
-                a_yes_b.price,
-                a_no_a.price,
-                fee_rate_for(market_b),
-                fee_rate_for(market_a),
-            )
-            if profit.net_profit <= ZERO:
-                continue
-
-            size = executable_size(
-                [
-                    depth_at_or_better(yes_b_book, "buy", a_yes_b.price),
-                    depth_at_or_better(no_a_book, "buy", a_no_a.price),
-                ]
-            )
             # Use B's horizon, falling back to A's — but with an explicit None check, not
             # `or`: a legitimate days_to_resolution of 0 (resolves today) is falsy and would
             # otherwise be silently replaced by A's horizon, mis-annualizing the opp.
@@ -90,15 +90,15 @@ class DependencyDetector:
                     Leg(
                         token_id=market_b.yes_token_id,
                         side="buy",
-                        price=a_yes_b.price,
-                        size=ONE,
+                        price=leg_costs[0] / size,
+                        size=size,
                         outcome="Yes_B",
                     ),
                     Leg(
                         token_id=market_a.no_token_id,
                         side="buy",
-                        price=a_no_a.price,
-                        size=ONE,
+                        price=leg_costs[1] / size,
+                        size=size,
                         outcome="No_A",
                     ),
                 ],

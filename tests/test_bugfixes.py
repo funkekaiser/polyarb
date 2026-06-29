@@ -10,6 +10,7 @@ import pytest
 
 from polyarb.detectors.base import ZERO, Profit, Snapshot, make_opportunity
 from polyarb.detectors.dependency import DependencyDetector
+from polyarb.detectors.negrisk_basket import NegRiskBasketDetector
 from polyarb.engine.scanner import _days_to_resolution
 from polyarb.models import DetectorKind, Market, OrderBook
 from polyarb.pricing.fees import taker_fee
@@ -330,3 +331,112 @@ def test_complement_detector_suppresses_gas_negative_opp() -> None:
     opps = list(ComplementDetector().detect(snap_no_gas))
     under_opps = [o for o in opps if "under" in o.description]
     assert len(under_opps) == 1
+
+
+# ── Hardening: negrisk + dependency gas-guard and crossed-book skip ───────────────────────
+
+
+# Fix 4b — negrisk_basket detector must suppress gas-negative opportunities.
+def test_negrisk_detector_suppresses_gas_negative_opp() -> None:
+    """NegRiskBasketDetector must not emit when size * net_profit ≤ gas.
+
+    Three outcomes at 0.30 each: net=0.10/set, size=100 → total_net=10.00.
+    With gas=10.50 (wipes the edge): suppress.
+    With gas=0 (no gas cost): emit.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(3)
+    ]
+    event = make_event(markets, neg_risk=True)
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(3)}
+
+    snap_high_gas = Snapshot(event=event, books=books, gas=Decimal("10.50"))
+    assert list(NegRiskBasketDetector().detect(snap_high_gas)) == []
+
+    snap_no_gas = Snapshot(event=event, books=books, gas=ZERO)
+    opps = list(NegRiskBasketDetector().detect(snap_no_gas))
+    assert len(opps) == 1
+
+
+# Fix 5 — negrisk_basket detector must skip an event with a crossed YES book.
+def test_negrisk_detector_skips_crossed_yes_book() -> None:
+    """NegRiskBasketDetector must yield nothing when any outcome's YES book is crossed.
+
+    y0 has bid 0.70 >= ask 0.25 (crossed). The basket sum (0.25+0.30+0.30=0.85) would
+    look profitable, but the crossed book signals bad data — must suppress.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(3)
+    ]
+    event = make_event(markets, neg_risk=True)
+    books = {
+        "y0": make_book("y0", bids=[("0.70", "100")], asks=[("0.25", "100")]),  # crossed
+        "y1": make_book("y1", asks=[("0.30", "100")]),
+        "y2": make_book("y2", asks=[("0.30", "100")]),
+    }
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+# Fix 4c — dependency detector must suppress gas-negative opportunities.
+def test_dependency_detector_suppresses_gas_negative_opp() -> None:
+    """DependencyDetector must not emit when size * net_profit ≤ gas.
+
+    a_no_ask=0.30 (50 shares), b_yes_ask=0.30 (80 shares).
+    size=50, net=0.40/set → total_net=20.00.
+    With gas=25.00 (wipes the edge): suppress.
+    With gas=0: emit.
+    """
+    market_a = make_market("0xA", yes="yA", no="nA")
+    market_b = make_market("0xB", yes="yB", no="nB")
+    relation = Relation("0xA", "0xB", "A ⇒ B")
+    books = {
+        "nA": make_book("nA", asks=[("0.30", "50")]),
+        "yB": make_book("yB", asks=[("0.30", "80")]),
+    }
+    markets = [market_a, market_b]
+    relations = [relation]
+
+    snap_high_gas = Snapshot(markets=markets, relations=relations, books=books, gas=Decimal("25"))
+    assert list(DependencyDetector().detect(snap_high_gas)) == []
+
+    snap_no_gas = Snapshot(markets=markets, relations=relations, books=books, gas=ZERO)
+    opps = list(DependencyDetector().detect(snap_no_gas))
+    assert len(opps) == 1
+
+
+# Fix 6 — dependency detector must skip a relation with a crossed leg book.
+def test_dependency_detector_skips_crossed_book() -> None:
+    """DependencyDetector must yield nothing when either leg's book is crossed.
+
+    Test both legs: crossed NO_A (case a) and crossed YES_B (case b).
+    """
+    market_a = make_market("0xA", yes="yA", no="nA")
+    market_b = make_market("0xB", yes="yB", no="nB")
+    relation = Relation("0xA", "0xB", "A ⇒ B")
+    markets = [market_a, market_b]
+    relations = [relation]
+
+    # Case a: NO_A book is crossed (bid 0.80 >= ask 0.20).
+    snap_a = Snapshot(
+        markets=markets,
+        relations=relations,
+        books={
+            "nA": make_book("nA", bids=[("0.80", "100")], asks=[("0.20", "100")]),  # crossed
+            "yB": make_book("yB", asks=[("0.30", "80")]),
+        },
+    )
+    assert list(DependencyDetector().detect(snap_a)) == []
+
+    # Case b: YES_B book is crossed (bid 0.80 >= ask 0.20).
+    snap_b = Snapshot(
+        markets=markets,
+        relations=relations,
+        books={
+            "nA": make_book("nA", asks=[("0.30", "50")]),
+            "yB": make_book("yB", bids=[("0.80", "100")], asks=[("0.20", "100")]),  # crossed
+        },
+    )
+    assert list(DependencyDetector().detect(snap_b)) == []

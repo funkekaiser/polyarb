@@ -12,6 +12,7 @@ capturing all profitable depth and returning VWAP economics. Used by the complem
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 
 from polyarb.models import BookLevel, OrderBook
@@ -39,9 +40,37 @@ def executable_size(depths: list[Decimal]) -> Decimal:
     return min(depths, default=ZERO)
 
 
+def is_crossed(book: OrderBook) -> bool:
+    """Return True if ``book`` is crossed (best bid >= best ask).
+
+    A crossed book signals stale or erroneous data; both sides are required to be present.
+    Non-positive prices/sizes are ignored (they are bad-payload artefacts, not real quotes).
+    """
+    bids = [lvl for lvl in book.bids if lvl.size > ZERO and lvl.price > ZERO]
+    asks = [lvl for lvl in book.asks if lvl.size > ZERO and lvl.price > ZERO]
+    if not bids or not asks:
+        return False
+    best_bid = max(bids, key=lambda lvl: lvl.price)
+    best_ask = min(asks, key=lambda lvl: lvl.price)
+    return best_bid.price >= best_ask.price
+
+
+def _per_leg_rates(fee_rate: Decimal | Sequence[Decimal], n_legs: int) -> list[Decimal]:
+    """Normalize a scalar-or-sequence fee rate to one rate per leg.
+
+    A scalar is broadcast to every leg; a sequence must have exactly ``n_legs`` entries.
+    """
+    if isinstance(fee_rate, Decimal):
+        return [fee_rate] * n_legs
+    rates = list(fee_rate)
+    if len(rates) != n_legs:
+        raise ValueError(f"fee_rate has {len(rates)} entries, expected {n_legs} (one per leg)")
+    return rates
+
+
 def walk_buy_legs(
     leg_levels: list[list[BookLevel]],
-    fee_rate: Decimal,
+    fee_rate: Decimal | Sequence[Decimal],
     payoff: Decimal = ONE,
 ) -> tuple[Decimal, list[Decimal], Decimal]:
     """Greedily size a 'buy one share from each leg per set, completed set is worth `payoff`'
@@ -52,6 +81,10 @@ def walk_buy_legs(
     Include sets while marginal_cost + marginal_fee < payoff (strictly). Because prices are
     non-decreasing, marginal cost is non-decreasing, so the walk stops cleanly.
 
+    ``fee_rate`` may be a single rate applied to every leg, or a per-leg sequence (one rate
+    per leg, in ``leg_levels`` order) when legs span different markets/fee categories. A
+    per-leg sequence whose length differs from the number of legs is a programming error.
+
     Returns (size, per_leg_cost, total_fees):
       size         = total sets includable
       per_leg_cost = total spent on each leg over ``size`` sets (same order as leg_levels)
@@ -59,7 +92,10 @@ def walk_buy_legs(
     Empty/unprofitable → (ZERO, [ZERO]*len(legs), ZERO).
     """
     n_legs = len(leg_levels)
+    rates = _per_leg_rates(fee_rate, n_legs)
     zero_result: tuple[Decimal, list[Decimal], Decimal] = (ZERO, [ZERO] * n_legs, ZERO)
+    if n_legs == 0:
+        return zero_result  # no legs → nothing to size (avoid min() on an empty range below)
 
     # Filter zero-size and non-positive-price levels; sort each leg's asks ascending.
     sorted_legs: list[list[BookLevel]] = []
@@ -86,7 +122,7 @@ def walk_buy_legs(
             break
 
         prices = [sorted_legs[i][idx[i]].price for i in range(n_legs)]
-        marginal_fee = sum((taker_fee(p, ONE, fee_rate) for p in prices), ZERO)
+        marginal_fee = sum((taker_fee(prices[i], ONE, rates[i]) for i in range(n_legs)), ZERO)
 
         # Include this price slice only while it is strictly profitable.
         if sum(prices, ZERO) + marginal_fee >= payoff:

@@ -18,24 +18,9 @@ from decimal import Decimal
 from typing import ClassVar
 
 from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
-from polyarb.models import BookLevel, DetectorKind, Leg, Opportunity
+from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import walk_buy_legs, walk_sell_legs
-
-
-def _is_crossed(book_levels_bid: list[BookLevel], book_levels_ask: list[BookLevel]) -> bool:
-    """Return True if the book is crossed (best bid >= best ask).
-
-    A crossed book signals stale or erroneous data; both legs are required to be present.
-    Non-positive prices are ignored (they are bad-payload artefacts, not real quotes).
-    """
-    bids = [lvl for lvl in book_levels_bid if lvl.size > ZERO and lvl.price > ZERO]
-    asks = [lvl for lvl in book_levels_ask if lvl.size > ZERO and lvl.price > ZERO]
-    if not bids or not asks:
-        return False
-    best_bid = max(bids, key=lambda lvl: lvl.price)
-    best_ask = min(asks, key=lambda lvl: lvl.price)
-    return best_bid.price >= best_ask.price
+from polyarb.pricing.sizing import is_crossed, walk_buy_legs, walk_sell_legs
 
 
 def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal) -> Profit:
@@ -66,7 +51,7 @@ class ComplementDetector:
             if yes_book is None or no_book is None:
                 continue
             # Fix 2: skip markets with a crossed book (stale/erroneous data).
-            if _is_crossed(yes_book.bids, yes_book.asks) or _is_crossed(no_book.bids, no_book.asks):
+            if is_crossed(yes_book) or is_crossed(no_book):
                 continue
             fee_rate = fee_rate_for(market)
 
