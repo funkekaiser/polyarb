@@ -494,14 +494,18 @@ def test_add_relation_dedupes() -> None:
 
     saved = list(relmod.SEED_RELATIONS)
     try:
-        add_relation("0xQ1", "0xQ2", "first")
-        add_relation("0xQ1", "0xQ2", "duplicate")
+        first = add_relation("0xQ1", "0xQ2", "first")
+        dup = add_relation("0xQ1", "0xQ2", "duplicate")
         n = sum(
             1
             for r in relmod.SEED_RELATIONS
             if r.antecedent_condition_id == "0xQ1" and r.consequent_condition_id == "0xQ2"
         )
         assert n == 1
+        # First declaration wins: the duplicate call returns the REGISTERED relation (desc
+        # "first"), not a new object — a caller's captured ref matches what's in the graph.
+        assert dup is first
+        assert dup.description == "first"
     finally:
         relmod.SEED_RELATIONS[:] = saved
 

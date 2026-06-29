@@ -76,15 +76,18 @@ def scan(
 
     async def _run() -> None:
         async with GammaClient() as gamma, ClobClient() as clob:
-            # Build the notifier first: a bad notifier config (e.g. webhook with no URL) raises
-            # here, before the store is opened, so the SQLite connection can't leak on that path.
+            # Notifier (which eagerly opens an httpx client for webhooks) and store are both
+            # created inside the try so the finally releases whichever got created — even if the
+            # other's construction raises (a bad notifier config, or a store-open failure).
             notifier = build_notifier(settings.notifier, settings.notifier_url)
-            store = SqliteStore(settings.sqlite_path)
-            scanner = Scanner(settings, gamma=gamma, clob=clob, store=store, notifier=notifier)
+            store: SqliteStore | None = None
             try:
+                store = SqliteStore(settings.sqlite_path)
+                scanner = Scanner(settings, gamma=gamma, clob=clob, store=store, notifier=notifier)
                 await scanner.run(passes=passes, max_seconds=max_seconds or None)
             finally:
-                store.close()
+                if store is not None:
+                    store.close()
                 await notifier.aclose()
 
     asyncio.run(_run())
