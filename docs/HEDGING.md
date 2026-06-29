@@ -115,19 +115,21 @@ conservatively (e.g. the NO-ask cost to actually cover `Sᶜ`) and treat the EV 
 Ties into ranking item C2.
 
 **This crosses the SPEC "no forecasting opinion" boundary** — even market-implied, it's a
-probabilistic bet, not a structural identity. It would be a *separate, opt-in opportunity
-class* (`realizes="resolution"`, a new risk tag, never on the default `scan` path, clearly
-labelled "directional / not structural"). It is **not** implemented here. Options for Jonathan:
+probabilistic bet, not a structural identity.
 
-- **(A) Stay strictly structural** — never emit partial baskets; rely on §1+§2 only. Keeps the
-  product a pure structural-arb scanner. *(Recommended default.)*
-- **(B) Add an opt-in probabilistic mode** — emit partial baskets behind a config flag, in a
-  separate, clearly-tagged class, ranked by market-implied EV. More coverage, but it changes
-  what the product *is* and imports forecasting risk.
+> **Decision (2026-06-29, Jonathan): build it — option (B), opt-in.** A separate, clearly-
+> labelled "directional / not structural" opportunity class behind a config flag, **off by
+> default**, never on the default `scan` path, ranked by the conservative market-implied EV
+> above (`p = Σ_S/T`, residual priced at NO-ask cost, treated as a lower bound), carrying a
+> distinct risk tag. The default product stays a pure structural-arb scanner; this is an
+> additive, opt-in mode. **Not yet implemented** — sequenced after the structural correctness
+> work (A2/A3) and the NO-dual.
 
 ## Build order
 
-1. **NO-dual (§2 / B3)** — model-free, highest value, reuses A1's partition logic. Property-
-   test the `M−1` payoff identity; same gas/depth-walk/exhaustiveness treatment as the YES
-   basket.
-2. Decision on §5 before any partial-basket code.
+1. **A2 / A3 basket correctness** (void/50-50 handling, staleness/time-skew gate) — the
+   remaining structural "guaranteed $1 can be $0" risks. *(In progress.)*
+2. **NO-dual (§2 / B3)** — model-free coverage tool; reuses `live_partition(skip_augmented=
+   False)`. Property-test the `M−1` payoff identity.
+3. **Probabilistic partial basket (§5, opt-in)** — per the decision above; off by default,
+   separate class, conservative lower-bound EV.
