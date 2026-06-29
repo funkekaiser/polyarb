@@ -191,7 +191,7 @@ class Scanner:
             events=len(events),
             markets=len(markets),
             books=len(books),
-            stale_dropped=stale_dropped,
+            global_stale_dropped=stale_dropped,  # global only; the pass total is in scan_complete
         )
 
         opps: list[Opportunity] = []
@@ -246,6 +246,9 @@ class Scanner:
         filt = OpportunityFilter(s, self._dedupe)
         kept = rank(filt.apply(opps))
 
+        emitted = 0  # count actual successes, not len(kept) — a store/notify failure shouldn't
+        # inflate the emitted metric exactly when the system is degraded (disk full, SQLite
+        # locked, webhook down) and accurate monitoring matters most.
         for opp in kept:
             # Guard each emit independently: a store/notify failure on one opp must not abort
             # the loop and silently drop the rest (they were already marked "seen" in the
@@ -254,6 +257,7 @@ class Scanner:
             try:
                 self._store.record(opp)
                 await self._notifier.notify(opp)
+                emitted += 1
                 log.info(
                     "opportunity",
                     detector=str(opp.detector),
@@ -268,9 +272,9 @@ class Scanner:
         candidates_by_detector = Counter(str(opp.detector) for opp in opps)
         self._totals["passes"] += 1
         self._totals["candidates"] += len(opps)
-        self._totals["emitted"] += len(kept)
+        self._totals["emitted"] += emitted
         metrics.SCAN_PASSES.inc()
-        metrics.EMITTED.inc(len(kept))
+        metrics.EMITTED.inc(emitted)
         for detector_name, n in candidates_by_detector.items():
             self._totals[f"candidates.{detector_name}"] += n
             metrics.CANDIDATES.labels(detector=detector_name).inc(n)
@@ -298,22 +302,29 @@ class Scanner:
 
         start = loop.time()
         attempts = 0  # scan_once invocations (success or failure); `passes` arg bounds this
-        while not stop.is_set():
-            attempts += 1
-            try:
-                await self.scan_once()
-            except Exception as exc:  # a bad pass must not kill the loop
-                self._totals["errors"] += 1
-                metrics.SCAN_ERRORS.inc()
-                log.error("scan_pass_failed", error=repr(exc))
-            if passes and attempts >= passes:
-                break
-            if max_seconds is not None and (loop.time() - start) >= max_seconds:
-                break
-            # Interruptible sleep: wakes early if a stop signal arrives.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=self._settings.scan_interval_seconds)
-
-        # `attempts` counts scan_once invocations; self._totals["passes"] counts the ones that
-        # completed without error, so a failed pass no longer logs a contradictory pair.
-        log.info("scanner_stopped", attempts=attempts, totals=dict(self._totals))
+        try:
+            while not stop.is_set():
+                attempts += 1
+                try:
+                    await self.scan_once()
+                except Exception as exc:  # a bad pass must not kill the loop
+                    self._totals["errors"] += 1
+                    metrics.SCAN_ERRORS.inc()
+                    log.error("scan_pass_failed", error=repr(exc))
+                if passes and attempts >= passes:
+                    break
+                if max_seconds is not None and (loop.time() - start) >= max_seconds:
+                    break
+                # Interruptible sleep: wakes early if a stop signal arrives.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        stop.wait(), timeout=self._settings.scan_interval_seconds
+                    )
+        finally:
+            # Release the notifier's owned HTTP client (a WebhookNotifier creates one) on every
+            # exit path — signal, passes/max_seconds, or error — so we don't leak the pool.
+            with contextlib.suppress(Exception):
+                await self._notifier.aclose()
+            # `attempts` counts scan_once invocations; self._totals["passes"] counts the ones
+            # that completed without error, so a failed pass no longer logs a contradictory pair.
+            log.info("scanner_stopped", attempts=attempts, totals=dict(self._totals))

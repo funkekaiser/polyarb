@@ -180,8 +180,10 @@ class NegRiskDualDetector:
     thinnest (~1/(M-1) of the YES side). A single void can exceed the whole edge. Since
     void-proneness isn't otherwise detectable (A2), we only emit where the floor is robust:
     **every live leg must resolve on a void-resistant (OBJECTIVE) source**; void-prone events
-    are refused. Economics are inverted vs the YES basket (≈M-1 capital for the same edge → low
-    bps), so it ranks below a feasible YES basket.
+    are refused. Economics are inverted vs the YES basket: it deploys ≈M-1 capital for the *same
+    absolute edge*, so its return-on-capital is far lower (it does not co-occur with a feasible
+    YES basket on the same event — their edges are ≈ negatives — so this is about coverage, not
+    out-ranking; ranking is by absolute net $, C3).
     """
 
     kind: ClassVar[DetectorKind] = DetectorKind.NEGRISK_DUAL

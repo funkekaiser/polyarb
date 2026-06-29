@@ -323,3 +323,63 @@ def test_scanner_skips_paused_market() -> None:
     assert opps == []
     assert store.count() == 0
     store.close()
+
+
+def test_run_closes_notifier_on_shutdown() -> None:
+    # Engine bug: run() must aclose() the notifier on exit (releases the webhook httpx client).
+    class _SpyNotifier:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def notify(self, opp: object) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    spy = _SpyNotifier()
+    transport = _transport({})  # no books → no opps; we only care that aclose runs
+
+    async def go() -> None:
+        async with httpx.AsyncClient(transport=transport) as c:
+            scanner = Scanner(
+                _settings(),
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=spy,  # type: ignore[arg-type]
+            )
+            await scanner.run(passes=1)
+
+    asyncio.run(go())
+    assert spy.closed is True
+
+
+def test_emitted_counts_only_successes() -> None:
+    # Engine bug: a store.record failure must NOT inflate the emitted counter (it counts
+    # successes, not len(kept)) — accurate monitoring exactly when the system is degraded.
+    class _FailingStore:
+        def record(self, opp: object) -> None:
+            raise RuntimeError("disk full")
+
+        def close(self) -> None:
+            pass
+
+    books = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(books)
+
+    async def go() -> tuple[Scanner, list]:
+        async with httpx.AsyncClient(transport=transport) as c:
+            scanner = Scanner(
+                _settings(),
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=_FailingStore(),  # type: ignore[arg-type]
+                notifier=NullNotifier(),
+            )
+            kept = await scanner.scan_once()
+            return scanner, kept
+
+    scanner, kept = asyncio.run(go())
+    assert len(kept) == 1  # the complement arb is still detected and returned
+    assert scanner._totals["emitted"] == 0  # but nothing was successfully stored/emitted

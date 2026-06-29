@@ -440,3 +440,77 @@ def test_dependency_detector_skips_crossed_book() -> None:
         },
     )
     assert list(DependencyDetector().detect(snap_b)) == []
+
+
+# ── Third adversarial bug-hunt (2026-06-30) ──────────────────────────────────
+
+from polyarb.models import BookLevel  # noqa: E402
+from polyarb.pricing.sizing import walk_sell_legs  # noqa: E402
+from polyarb.resolution.relations import generate_dag_relations  # noqa: E402
+
+
+# Bug 15 — list-typed Market fields must tolerate explicit JSON null / "null" (one bad market
+# would otherwise crash the whole Gamma page's model_validate).
+def test_market_list_fields_tolerate_null() -> None:
+    base = {"id": "1", "conditionId": "0x1", "question": "q"}
+
+    def field(payload: dict, attr: str) -> list:
+        return getattr(Market.model_validate({**base, **payload}), attr)
+
+    assert field({"clobTokenIds": None}, "clob_token_ids") == []
+    assert field({"outcomes": None}, "outcomes") == []
+    assert field({"umaResolutionStatuses": "null"}, "uma_resolution_statuses") == []
+    assert field({"umaResolutionStatuses": None}, "uma_resolution_statuses") == []
+
+
+# Bug 16 — best_ask/best_bid must skip non-positive *price* levels (consistency with the walk /
+# is_crossed / top_level_min_depth), so a degenerate price=0 level can't become the "best" quote.
+def test_best_ask_skips_zero_price_level() -> None:
+    book = OrderBook(
+        market="c",
+        asset_id="t",
+        timestamp_ms=1,
+        bids=[
+            BookLevel(price=Decimal(0), size=Decimal(100)),
+            BookLevel(price=Decimal("0.30"), size=Decimal(5)),
+        ],
+        asks=[
+            BookLevel(price=Decimal(0), size=Decimal(100)),
+            BookLevel(price=Decimal("0.40"), size=Decimal(10)),
+        ],
+    )
+    assert book.best_ask is not None and book.best_ask.price == Decimal("0.40")
+    assert book.best_bid is not None and book.best_bid.price == Decimal("0.30")
+
+
+# Bug 17 — walk_sell_legs returns zero on empty input (mirror walk_buy_legs; no crash).
+def test_walk_sell_legs_empty_returns_zero() -> None:
+    assert walk_sell_legs([], Decimal("0.02")) == (Decimal(0), [], Decimal(0))
+
+
+# Bug 18 — add_relation dedupes on the (antecedent, consequent) pair (no duplicate opps).
+def test_add_relation_dedupes() -> None:
+    from polyarb.resolution import relations as relmod
+
+    saved = list(relmod.SEED_RELATIONS)
+    try:
+        add_relation("0xQ1", "0xQ2", "first")
+        add_relation("0xQ1", "0xQ2", "duplicate")
+        n = sum(
+            1
+            for r in relmod.SEED_RELATIONS
+            if r.antecedent_condition_id == "0xQ1" and r.consequent_condition_id == "0xQ2"
+        )
+        assert n == 1
+    finally:
+        relmod.SEED_RELATIONS[:] = saved
+
+
+# Bug 19 — a duplicate DAG node id within one underlying must fail loud, not silently drop a market.
+def test_generate_dag_rejects_duplicate_node_id() -> None:
+    dupe = [
+        MarketTags("a", "ETH", Comparator.NESTING, "node1", ComparatorKind.CUMULATIVE_TOUCH, "fp"),
+        MarketTags("b", "ETH", Comparator.NESTING, "node1", ComparatorKind.CUMULATIVE_TOUCH, "fp"),
+    ]
+    with pytest.raises(ValueError):
+        generate_dag_relations(dupe, [])

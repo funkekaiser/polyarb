@@ -184,6 +184,8 @@ def walk_sell_legs(
     """
     n_legs = len(leg_levels)
     zero_result: tuple[Decimal, list[Decimal], Decimal] = (ZERO, [ZERO] * n_legs, ZERO)
+    if n_legs == 0:
+        return zero_result  # no legs → nothing to size (mirror walk_buy_legs)
 
     # Filter zero-size and non-positive-price levels; sort each leg's bids descending.
     sorted_legs: list[list[BookLevel]] = []

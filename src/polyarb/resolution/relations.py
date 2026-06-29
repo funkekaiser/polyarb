@@ -65,7 +65,13 @@ def add_relation(antecedent: str, consequent: str, description: str) -> Relation
     if antecedent == consequent:
         raise ValueError("a relation's antecedent and consequent must differ (no self-loops)")
     relation = Relation(antecedent, consequent, description)
-    SEED_RELATIONS.append(relation)
+    # Dedupe on the (antecedent, consequent) pair: a duplicate declaration would otherwise make
+    # the dependency detector score — and emit — the same pair twice.
+    if not any(
+        r.antecedent_condition_id == antecedent and r.consequent_condition_id == consequent
+        for r in SEED_RELATIONS
+    ):
+        SEED_RELATIONS.append(relation)
     return relation
 
 
@@ -312,6 +318,12 @@ def generate_dag_relations(tags: list[MarketTags], edges: list[DagEdge]) -> list
     relations: list[Relation] = []
 
     for underlying, market_tags in by_underlying.items():
+        # Node id (bound) must be unique within an underlying — a duplicate would silently map a
+        # node to the wrong market (and drop the other), corrupting the relation set. Fail loud.
+        seen_nodes = [t.bound for t in market_tags]
+        if len(seen_nodes) != len(set(seen_nodes)):
+            dupes = sorted({b for b in seen_nodes if seen_nodes.count(b) > 1})
+            raise ValueError(f"duplicate DAG node id(s) {dupes} within underlying {underlying!r}")
         node_map: dict[str, MarketTags] = {t.bound: t for t in market_tags}
 
         for specific_node, general_node in closure:

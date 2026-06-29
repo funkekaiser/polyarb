@@ -24,9 +24,17 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 
 
 def _parse_json_list(value: Any) -> Any:
-    """Gamma sends list-typed fields as JSON-encoded strings; decode them."""
+    """Gamma sends list-typed fields as JSON-encoded strings; decode them.
+
+    Tolerates the empty/absent encodings Gamma uses for "no list" — Python ``None`` (JSON
+    null), ``""``, and the JSON-string ``"null"`` all map to ``[]`` — so an explicit-null
+    field never crashes the whole page's ``model_validate``.
+    """
+    if value is None:
+        return []
     if isinstance(value, str):
-        return json.loads(value)
+        stripped = value.strip()
+        return [] if stripped in ("", "null") else json.loads(stripped)
     return value
 
 
@@ -83,15 +91,12 @@ class Market(BaseModel):
     def _liveness_default(cls, value: Any) -> Any:
         return 0 if value in (None, "") else value
 
-    @field_validator("uma_resolution_statuses", mode="before")
-    @classmethod
-    def _decode_uma_statuses(cls, value: Any) -> Any:
-        # JSON-encoded list-string, but tolerate null/blank (→ []) which Gamma may send.
-        return [] if value in (None, "") else _parse_json_list(value)
-
-    @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
+    @field_validator(
+        "outcomes", "outcome_prices", "clob_token_ids", "uma_resolution_statuses", mode="before"
+    )
     @classmethod
     def _decode_json_lists(cls, value: Any) -> Any:
+        # JSON-encoded list-strings; _parse_json_list tolerates null/blank/"null" → [].
         return _parse_json_list(value)
 
     @field_validator(
@@ -212,26 +217,24 @@ class OrderBook(BaseModel):
 
     @property
     def best_bid(self) -> BookLevel | None:
-        """Highest-priced bid with real size (computed by value, not list position).
+        """Highest-priced bid with real size and a positive price (computed by value).
 
-        Zero-size levels are skipped: a phantom 0-size level at a better price would
-        otherwise become the "best" quote, yielding an opportunity with executable_size 0
-        while masking the real, fillable level just behind it.
+        Skips non-positive size/price levels — a phantom 0-size (or 0-price) level at a
+        better price would otherwise become the "best" quote, yielding an executable_size-0
+        opportunity (or a degenerate price) while masking the real fillable level behind it.
+        Matches the validity filter used by the depth-walk, is_crossed, and top_level_min_depth.
         """
         return max(
-            (level for level in self.bids if level.size > 0),
+            (level for level in self.bids if level.size > 0 and level.price > 0),
             key=lambda level: level.price,
             default=None,
         )
 
     @property
     def best_ask(self) -> BookLevel | None:
-        """Lowest-priced ask with real size (computed by value, not list position).
-
-        Zero-size levels are skipped (see :meth:`best_bid`).
-        """
+        """Lowest-priced ask with real size and a positive price (see :meth:`best_bid`)."""
         return min(
-            (level for level in self.asks if level.size > 0),
+            (level for level in self.asks if level.size > 0 and level.price > 0),
             key=lambda level: level.price,
             default=None,
         )

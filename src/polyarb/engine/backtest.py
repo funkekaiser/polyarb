@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from polyarb.models import Opportunity
+from polyarb.models import DetectorKind, Opportunity
 
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
@@ -28,7 +28,10 @@ class BacktestSummary:
     net_bps_median: Decimal
     net_bps_max: Decimal
     net_bps_mean: Decimal
-    total_would_be_pnl: Decimal  # Σ total_net_profit (gas-adjusted)
+    total_would_be_pnl: Decimal  # Σ total_net_profit over STRUCTURAL opps (gas-adjusted)
+    # Σ total_net_profit over PARTIAL_BASKET opps — a directional *expected* value (optimistic,
+    # NOT a structural guarantee); kept separate so it never inflates the structural headline.
+    directional_ev: Decimal
     total_executable_notional: Decimal  # Σ cost * executable_size
     avg_days_to_resolution: float | None  # mean over opps with days_to_resolution; None if none
 
@@ -61,6 +64,7 @@ def summarize(opps: list[Opportunity]) -> BacktestSummary:
             net_bps_max=_ZERO,
             net_bps_mean=_ZERO,
             total_would_be_pnl=_ZERO,
+            directional_ev=_ZERO,
             total_executable_notional=_ZERO,
             avg_days_to_resolution=None,
         )
@@ -69,7 +73,8 @@ def summarize(opps: list[Opportunity]) -> BacktestSummary:
     by_risk: dict[str, int] = {}
     by_realizes: dict[str, int] = {}
     bps_values: list[Decimal] = []
-    total_pnl = _ZERO
+    total_pnl = _ZERO  # structural only
+    directional_ev = _ZERO  # PARTIAL_BASKET (directional, optimistic EV) — kept separate
     total_notional = _ZERO
     days_sum = 0
     days_count = 0
@@ -87,8 +92,11 @@ def summarize(opps: list[Opportunity]) -> BacktestSummary:
         # Bps distribution
         bps_values.append(opp.net_profit_bps)
 
-        # P&L and notional
-        total_pnl += opp.total_net_profit
+        # P&L and notional — structural P&L and directional EV are NOT comparable, so split them.
+        if opp.detector == DetectorKind.PARTIAL_BASKET:
+            directional_ev += opp.total_net_profit
+        else:
+            total_pnl += opp.total_net_profit
         total_notional += opp.cost * opp.executable_size
 
         # Days-to-resolution (only opps that have it)
@@ -110,6 +118,7 @@ def summarize(opps: list[Opportunity]) -> BacktestSummary:
         net_bps_max=bps_sorted[-1],
         net_bps_mean=bps_sum / Decimal(n),
         total_would_be_pnl=total_pnl,
+        directional_ev=directional_ev,
         total_executable_notional=total_notional,
         avg_days_to_resolution=days_sum / days_count if days_count > 0 else None,
     )
@@ -149,7 +158,12 @@ def format_summary(summary: BacktestSummary) -> str:
     lines.append("")
 
     # P&L and notional
-    lines.append(f"  total would-be P&L:          ${summary.total_would_be_pnl.quantize(q2)}")
+    lines.append(f"  structural would-be P&L:     ${summary.total_would_be_pnl.quantize(q2)}")
+    if summary.directional_ev != _ZERO:
+        lines.append(
+            f"  directional EV (partial):    ${summary.directional_ev.quantize(q2)}  "
+            "(optimistic, NOT a structural guarantee)"
+        )
     lines.append(
         f"  total executable notional:   ${summary.total_executable_notional.quantize(q2)}"
     )
