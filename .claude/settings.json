@@ -1,6 +1,6 @@
 {
   "env": {
     "UV_NO_SYNC": "1",
-    "UV_LINK_MODE": "copy"
+    "PYTHONPATH": "src"
   }
 }

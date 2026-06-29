@@ -66,3 +66,8 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put src/ on sys.path directly so the suite imports polyarb even when the editable
+# install's polyarb.pth is unreadable. On macOS, `uv run` re-applies the BSD UF_HIDDEN
+# flag to the installed *.pth, and Python 3.12's site.addpackage silently skips hidden
+# .pth files — which otherwise breaks collection with "No module named 'polyarb'".
+pythonpath = ["src"]

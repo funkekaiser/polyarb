@@ -73,17 +73,34 @@ uv run mypy src                                  # strict type check
 docker compose -f docker/docker-compose.yml up --build   # containerized long-running scanner
 ```
 
-### venv: auto-sync is OFF on purpose
+### venv: the macOS hidden-`.pth` problem and the layered fix
 
-`uv run`'s auto-sync rebuilds the editable install on every `pyproject.toml` mtime change,
-and that rebuild has a ~2 ms window where `polyarb.pth` is unlinked then recopied — a
-concurrent `uv run` (or one started during the window) misses it and `import polyarb` fails.
-To kill the race, `UV_NO_SYNC=1` (in `.claude/settings.json`) and `link-mode = "copy"` (in
-`uv.toml`) are set, so `uv run` never auto-rebuilds.
+**Root cause of the recurring `ModuleNotFoundError: No module named 'polyarb'`.** On macOS,
+`uv run` re-applies the BSD `UF_HIDDEN` flag to the installed `polyarb.pth` (the editable-
+install path file), and **Python 3.12's `site.addpackage` silently skips hidden `.pth`
+files**. So `src/` never lands on `sys.path` and the import fails — repeatedly, because it
+re-hides on the next `uv run`. This is *not* the rename and *not* link-mode (it happens under
+both `copy` and `hardlink`); diagnose with `ls -lO .venv/lib/python3.12/site-packages/*.pth`
+(look for the `hidden` flag).
 
-Consequence: **the venv no longer self-heals.** You must `uv sync --dev` yourself at session
-start and after any dependency change — otherwise a stale/missing venv stays broken. If an
-import still breaks, recover with `rm -rf .venv && uv sync --dev`. CI is unaffected (fresh installs).
+The fix makes imports **independent of the `.pth`** so the hidden flag stops mattering:
+
+- **Tests** — `pyproject.toml` sets `pythonpath = ["src"]`, so `pytest` finds `polyarb`
+  regardless of the `.pth`. (Robust; needs nothing else.)
+- **CLI / `uv run python` / scripts** — `.claude/settings.json` sets `PYTHONPATH=src`
+  (honored before site processing). `scripts/demo.py` also self-bootstraps `src/` onto the
+  path. Note: a `settings.json` env change only takes effect **next** session — within the
+  session that set it, prefix commands with `PYTHONPATH=src` manually.
+- **Auto-sync race** — `UV_NO_SYNC=1` (same file) keeps `uv run` from rebuilding the editable
+  install mid-run; with auto-sync off there's no concurrent-rebuild race.
+- **One-shot rescue** if you still hit it: `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
+
+`uv.toml` pins `link-mode = "hardlink"` (not `copy`) — not as the cure, but because the venv
+`.pth` then shares the uv cache inode, so a single `chflags` on either clears both.
+
+Consequence: **the venv does not self-heal.** Run `uv sync --dev` yourself at session start
+and after any dependency change. Hard recovery: `rm -rf .venv && uv sync --dev`. CI is
+unaffected (fresh Linux installs — no `UF_HIDDEN`).
 
 ## Architecture (mental model — full tree is in SPEC.md)
 

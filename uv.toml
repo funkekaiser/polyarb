@@ -1,11 +1,16 @@
 # uv project-level configuration.
 # See https://docs.astral.sh/uv/reference/settings/ for all options.
 
-# Use file copies rather than hardlinks when installing from the uv cache.
-# This avoids a class of APFS-hardlink race conditions where two concurrent
-# uv processes race on the same inode and one unlinks the cache entry while
-# the other is still referencing it.  Copies are written atomically via a
-# temp-file-then-rename so the installed file is never in a partially-written
-# state.  The cost is slightly more disk I/O during installs; for a dev venv
-# this is negligible.
-link-mode = "copy"
+# Default (hardlink) link-mode, pinned explicitly.
+#
+# NOTE: link-mode is NOT the cure for the recurring "No module named 'polyarb'" on macOS.
+# The real cause is that `uv run` re-applies the BSD UF_HIDDEN flag to the installed
+# polyarb.pth, and Python 3.12's site.addpackage silently skips hidden .pth files. That
+# happens under both copy and hardlink. The durable fix lives elsewhere: `PYTHONPATH=src`
+# (.claude/settings.json) and `pythonpath = ["src"]` (pyproject pytest config) make imports
+# independent of the .pth. See CLAUDE.md "venv" for the full story.
+#
+# hardlink is kept (over the briefly-tried "copy") only because it shares the cache inode,
+# so clearing UF_HIDDEN once on the cache file also clears the venv copy — and it avoids the
+# copy-mode disk churn. Do not switch to "copy".
+link-mode = "hardlink"
