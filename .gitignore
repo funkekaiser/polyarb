@@ -27,6 +27,9 @@ tests/fixtures/recorded/
 *.db
 polyarb.db
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # OS / editor
 .DS_Store
 .idea/
