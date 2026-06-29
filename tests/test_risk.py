@@ -39,6 +39,13 @@ def test_risk_rank_orders_objective_below_at_risk() -> None:
     assert risk_rank("nonsense") == risk_rank(ResolutionRisk.STANDARD)
 
 
+def test_directional_ranks_below_structural_above_at_risk() -> None:
+    # §5: a directional partial basket must never outrank a structural arb, but must survive the
+    # default exclude_at_risk filter (an explicit opt-in): ELEVATED < DIRECTIONAL < AT_RISK.
+    assert risk_rank(ResolutionRisk.ELEVATED) < risk_rank(ResolutionRisk.DIRECTIONAL)
+    assert risk_rank(ResolutionRisk.DIRECTIONAL) < risk_rank(ResolutionRisk.AT_RISK)
+
+
 def _market_with_liveness(seconds: int) -> Market:
     return Market(
         id="1",

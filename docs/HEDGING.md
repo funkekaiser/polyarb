@@ -133,13 +133,21 @@ Ties into ranking item C2.
 **This crosses the SPEC "no forecasting opinion" boundary** — even market-implied, it's a
 probabilistic bet, not a structural identity.
 
-> **Decision (2026-06-29, Jonathan): build it — option (B), opt-in.** A separate, clearly-
-> labelled "directional / not structural" opportunity class behind a config flag, **off by
-> default**, never on the default `scan` path, ranked by the conservative market-implied EV
-> above (`p = Σ_S/T`, residual priced at NO-ask cost, treated as a lower bound), carrying a
-> distinct risk tag. The default product stays a pure structural-arb scanner; this is an
-> additive, opt-in mode. **Not yet implemented** — sequenced after the structural correctness
-> work (A2/A3) and the NO-dual.
+> **Decision (2026-06-29, Jonathan): build it — option (B), opt-in. DONE.**
+> `PartialBasketDetector` (`detectors/partial_basket.py`): a separate "directional / not
+> structural" class, **off by default** (`enable_partial_baskets`), never on the default `scan`
+> path, tagged `ResolutionRisk.DIRECTIONAL` so it ranks below *every* structural arb (and
+> `max`-ed with the legs' own risk so a dispute-prone leg stays excludable). Trigger: the full
+> basket *would* be a structural arb (`T < 1`) but a leg is unbuyable; emit the buyable subset
+> `S` (≥2) sized at `payoff = p = Σ_S/T`, with worst-case loss (full stake) surfaced.
+>
+> **Two committee honesty caveats baked into the code/docstring** — they correct the earlier
+> "conservative lower bound" framing: (1) the EV is **OPTIMISTIC, not a lower bound** — pricing
+> `Sᶜ` at its (cached, often stale) best ask only buys a half-spread cushion, while the dropped
+> legs' *true* probability tends to exceed their stale ask (adverse selection), understating `T`
+> and overstating `p`; the only hard number is the worst-case loss. (2) `executable_size` is the
+> **risk-neutral max-EV size** (walk to marginal EV = 0), an *upper bound* on prudent size — a
+> Kelly bettor sizes far smaller. Future: NO-ask residual pricing and Kelly fractioning.
 
 ## Build order
 
@@ -147,5 +155,6 @@ probabilistic bet, not a structural identity.
    (A3 staleness net + A2 partial: void is documented-open; see STRATEGY_BACKLOG).
 2. **NO-dual (§2 / B3)** — **done**: model-free coverage tool, void-gated to OBJECTIVE legs,
    reuses `live_partition(skip_augmented=False)`; `M−1` identity property-/committee-checked.
-3. **Probabilistic partial basket (§5, opt-in)** — *next*; per the decision above; off by
-   default, separate class, conservative lower-bound EV.
+3. **Probabilistic partial basket (§5, opt-in)** — **done**: `PartialBasketDetector`, off by
+   default, DIRECTIONAL-tagged; EV honestly labelled optimistic (not a floor), worst-case loss
+   surfaced. Future: NO-ask residual pricing + Kelly sizing.

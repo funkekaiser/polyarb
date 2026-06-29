@@ -24,10 +24,11 @@ from polyarb.detectors.base import Snapshot
 from polyarb.detectors.complement import ComplementDetector
 from polyarb.detectors.dependency import DependencyDetector
 from polyarb.detectors.negrisk_basket import NegRiskBasketDetector, NegRiskDualDetector
+from polyarb.detectors.partial_basket import PartialBasketDetector
 from polyarb.engine import metrics
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
-from polyarb.models import Market, Opportunity, OrderBook
+from polyarb.models import DetectorKind, Market, Opportunity, OrderBook
 from polyarb.resolution.relations import (
     POLITICS_NESTING,
     SEED_RELATIONS,
@@ -38,7 +39,7 @@ from polyarb.resolution.relations import (
     generate_dag_relations,
     generate_ladder_relations,
 )
-from polyarb.resolution.risk import ResolutionRisk, aggregate_risk
+from polyarb.resolution.risk import ResolutionRisk, aggregate_risk, risk_rank
 from polyarb.sinks.notify import Notifier, NullNotifier
 from polyarb.sinks.store import OpportunityStore
 
@@ -90,6 +91,12 @@ def resolution_risk_for(opp: Opportunity, markets_by_condition: dict[str, Market
     can't demote or hard-exclude genuinely risk-free money. Held-to-resolution arbs take the
     worst risk across the markets they span.
     """
+    if opp.detector == DetectorKind.PARTIAL_BASKET:
+        # §5 partial baskets are directional bets, not structural locks → at least DIRECTIONAL so
+        # they rank below every structural arb. Take the worse of that and the legs' own
+        # resolution risk, so a dispute-prone (AT_RISK) leg still keeps the opp excludable.
+        spanned = [markets_by_condition[c] for c in opp.condition_ids if c in markets_by_condition]
+        return max(ResolutionRisk.DIRECTIONAL, aggregate_risk(spanned), key=risk_rank)
     if opp.realizes == "instant":
         return ResolutionRisk.OBJECTIVE
     spanned = [markets_by_condition[c] for c in opp.condition_ids if c in markets_by_condition]
@@ -126,6 +133,7 @@ class Scanner:
         self._complement = ComplementDetector()
         self._negrisk = NegRiskBasketDetector()
         self._negrisk_dual = NegRiskDualDetector()
+        self._partial = PartialBasketDetector()  # §5 — only run when explicitly enabled
         self._dependency = DependencyDetector()
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
         # Cumulative metrics across passes (Prometheus /metrics could expose these later).
@@ -227,6 +235,8 @@ class Scanner:
             )
             opps.extend(self._negrisk.detect(event_snap))
             opps.extend(self._negrisk_dual.detect(event_snap))
+            if s.enable_partial_baskets:  # §5 — opt-in directional, off by default
+                opps.extend(self._partial.detect(event_snap))
 
         for opp in opps:
             opp.resolution_risk = resolution_risk_for(opp, by_condition)

@@ -124,14 +124,15 @@ and that A2's `customLiveness>0→AT_RISK` was miscalibrated theater (downgraded
 |---|-----|-----|-------|---------------|--------|
 | A3-quiescence | B,D | MED | A3's `now − timestamp` net can't distinguish a corrupt stale snapshot (#180) from a quiescent-but-valid book; any threshold trades thin-market coverage for staleness safety. | Targeted #180 detector: flag books whose `hash` reverted to a prior value or that show the 0.01/0.99 corrupt pattern, instead of (or alongside) a blunt age cutoff. | open |
 | A2-void (core) | B,D | HIGH | Pre-resolution void/50-50 detection for **live** legs — no signal in available data (`customLiveness` is dispute-window length, not void prob). | A declared void-prone/category list (needs a live-API survey) or a payoff-haircut policy for held arbs; otherwise accept as a documented residual gated by resolution-risk. | open |
-| §5-partial | B | — | Probabilistic partial-basket mode. **Decision: build it, opt-in, off by default** (Jonathan, 2026-06-29). | Per `docs/HEDGING.md` §5: separate clearly-tagged class, conservative lower-bound EV (`p=Σ_S/T`, residual at NO-ask cost), config flag. Sequenced after the structural work. | approved, not built |
+| §5-partial | B | — | Probabilistic partial-basket mode (opt-in). | `PartialBasketDetector`, off by default (`enable_partial_baskets`), DIRECTIONAL-tagged (ranks below every structural arb, `max`-ed with legs' own risk), `payoff=p=Σ_S/T`. | **done (2026-06-29)** — committee honesty fixes baked in: EV labelled **optimistic, not a floor** (Sᶜ at stale ask → p overstated under adverse selection), worst-case loss surfaced, `executable_size` is risk-neutral max-EV. **Future:** NO-ask residual pricing + Kelly sizing. |
 
-## Focus (next: §5 opt-in partial basket, then the risk layer)
+## Focus (next: the risk / ranking layer C1–C3)
 
-A1 (exhaustiveness), A3 (staleness net), and **B3 (NO-dual, void-gated)** are **done**; A2's
-detectable part is done and its core void risk is documented-open. Remaining, in order: the
-**opt-in probabilistic partial basket (§5)** (approved — off by default, separate class,
-conservative lower-bound EV; see `docs/HEDGING.md`), then the deeper risk/ranking layer
-(**C1–C3**: real AT_RISK assignment, probabilistic risk-adjustment, winner's-curse guard) which
-several A-tier residuals (A1-riskwt, A2-void, A3-quiescence, the dual's void-gate coverage
-limit) now feed into.
+A1 (exhaustiveness), A3 (staleness net), **B3 (NO-dual, void-gated)**, and **§5 (opt-in partial
+basket)** are **done**; A2's detectable part is done and its core void risk is documented-open.
+The detector/strategy surface is now broad; the next high-value work is the deeper
+**risk/ranking layer (C1–C3)**: real AT_RISK assignment (C1), probabilistic risk-adjustment
+ranking `p·edge − (1−p)·loss` (C2), and a winner's-curse / implausibility guard (C3). Several
+A-tier residuals now converge there — A1-riskwt (near-resolution baskets), A2-void, A3-quiescence,
+and the §5 EV's optimism / Kelly-sizing — so C2's probabilistic framework is the natural home to
+make all of them continuous and tunable rather than one-off flags.

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     min_notional_usdc: Decimal = Decimal(50)
     exclude_at_risk_resolution: bool = True
     dedupe_cooldown_seconds: float = 300.0
+    # §5 — opt-in probabilistic partial basket (docs/HEDGING.md §5). OFF by default and never on
+    # the default scan path: when the full NegRisk basket can't be locked (a leg is unbuyable),
+    # emit the buyable subset as a *directional* (NOT structural / model-free) bet on the
+    # market-implied residual, tagged DIRECTIONAL so it ranks below every structural arb.
+    enable_partial_baskets: bool = False
 
     # --- discovery / fetch bounds ---
     event_discovery_limit: int = 200

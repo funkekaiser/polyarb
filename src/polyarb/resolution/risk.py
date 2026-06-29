@@ -18,6 +18,7 @@ class ResolutionRisk(StrEnum):
     OBJECTIVE = "objective"  # price feed / sports result — near-zero dispute risk
     STANDARD = "standard"
     ELEVATED = "elevated"  # politics and the like — allowed but ranked lower
+    DIRECTIONAL = "directional"  # §5 partial basket — NOT a structural lock; an EV bet
     AT_RISK = "at_risk"  # subjective / dispute-prone — default-excluded
 
 
@@ -27,11 +28,15 @@ class ResolutionRisk(StrEnum):
 _UMA_DEFAULT_LIVENESS_S = 7200
 
 
+# Ordering doubles as the primary rank key (lower = preferred). DIRECTIONAL sits below every
+# structural tier so a probabilistic partial basket can never outrank a guaranteed arb, but
+# above AT_RISK so it survives the default `exclude_at_risk` filter (it's an explicit opt-in).
 _RISK_ORDER: dict[ResolutionRisk, int] = {
     ResolutionRisk.OBJECTIVE: 0,
     ResolutionRisk.STANDARD: 1,
     ResolutionRisk.ELEVATED: 2,
-    ResolutionRisk.AT_RISK: 3,
+    ResolutionRisk.DIRECTIONAL: 3,
+    ResolutionRisk.AT_RISK: 4,
 }
 
 

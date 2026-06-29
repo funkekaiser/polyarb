@@ -77,6 +77,22 @@ NEGRISK_EVENT = {
 }
 
 
+# §5 partial: 3-outcome event where leg 2 is unbuyable (no book) but carries a cached bestAsk,
+# and T = 0.30*3 = 0.90 < 1 (an unfillable structural arb).
+PARTIAL_EVENT = {
+    "id": "3",
+    "title": "Partial event",
+    "negRisk": True,
+    "active": True,
+    "closed": False,
+    "markets": [
+        _negrisk_market("0xP0", "PY0", "PN0"),
+        _negrisk_market("0xP1", "PY1", "PN1"),
+        {**_negrisk_market("0xP2", "PY2", "PN2"), "bestAsk": "0.30"},  # unbuyable: bestAsk, no book
+    ],
+}
+
+
 def _book(asset_id: str, *, ask: str, bid: str, age_s: float = 0.0) -> dict:
     # Fresh CLOB book timestamp (epoch ms) so the A3 staleness gate keeps it; ``age_s`` backdates
     # it to exercise the gate's drop path.
@@ -119,7 +135,11 @@ def _settings() -> Settings:
     )
 
 
-def _run_scan(books: dict[str, dict], events: list[dict] | None = None) -> tuple[list, SqliteStore]:
+def _run_scan(
+    books: dict[str, dict],
+    events: list[dict] | None = None,
+    settings: Settings | None = None,
+) -> tuple[list, SqliteStore]:
     transport = _transport(books, events)
     store = SqliteStore(":memory:")
 
@@ -129,7 +149,7 @@ def _run_scan(books: dict[str, dict], events: list[dict] | None = None) -> tuple
             httpx.AsyncClient(transport=transport) as clob_http,
         ):
             scanner = Scanner(
-                _settings(),
+                settings or _settings(),
                 gamma=GammaClient(client=gamma_http),
                 clob=ClobClient(client=clob_http),
                 store=store,
@@ -176,6 +196,33 @@ def test_scanner_detects_negrisk_dual() -> None:
     assert DetectorKind.NEGRISK_DUAL in kinds
     assert DetectorKind.NEGRISK_BASKET not in kinds  # Σ YES = 1.2, no basket arb
     store.close()
+
+
+def test_scanner_partial_basket_opt_in() -> None:
+    # §5 is OFF by default → no partial basket even when the unfillable-arb setup is present;
+    # enabling the flag makes the scanner emit the directional partial. Only PY0/PY1 have books
+    # (PY2 unbuyable, NO books absent) so neither the YES basket nor the dual fires.
+    books = {f"PY{i}": _book(f"PY{i}", ask="0.30", bid="0.20") for i in range(2)}
+
+    off, store = _run_scan(books, events=[PARTIAL_EVENT])
+    assert all(o.detector != DetectorKind.PARTIAL_BASKET for o in off)
+    store.close()
+
+    on_settings = Settings(
+        min_profit_bps=Decimal(1),
+        min_notional_usdc=Decimal(1),
+        dedupe_cooldown_seconds=0.0,
+        max_markets_per_scan=10,
+        event_discovery_limit=10,
+        enable_partial_baskets=True,
+    )
+    on, store2 = _run_scan(books, events=[PARTIAL_EVENT], settings=on_settings)
+    partials = [o for o in on if o.detector == DetectorKind.PARTIAL_BASKET]
+    assert len(partials) == 1
+    assert partials[0].resolution_risk == "directional"  # ranks below every structural arb
+    # Mutual exclusion: the structural YES basket never co-fires (a leg is unbuyable).
+    assert DetectorKind.NEGRISK_BASKET not in {o.detector for o in on}
+    store2.close()
 
 
 def test_scanner_emits_nothing_when_no_arb() -> None:
