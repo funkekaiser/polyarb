@@ -3,8 +3,19 @@
 A 15-minute walkthrough to understand what this project does, see it run, and know where
 every piece lives. Read top-to-bottom or jump to a section.
 
-> One-time setup (per the venv rules in CLAUDE.md): `uv sync --dev`. The venv does **not**
-> self-heal — if `import polyarb` ever fails, `rm -rf .venv && uv sync --dev`.
+> **One-time setup** (per the venv rules in CLAUDE.md): `uv sync --dev`.
+>
+> Every command below is prefixed with `PYTHONPATH=src`. On macOS, `uv run` can re-apply the
+> hidden flag to the editable-install `.pth` file; Python 3.12 then silently skips it and
+> `import polyarb` fails with `ModuleNotFoundError`. `PYTHONPATH=src` puts the source tree on
+> `sys.path` directly, so the commands work regardless of that flag — now and in the future.
+> (One-shot rescue if you hit it anyway: `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
+> Full story in CLAUDE.md → "venv".)
+>
+> **For a long-running / production scanner, use Docker instead** — a Linux image where this
+> macOS issue does not exist:
+> `docker compose -f docker/docker-compose.yml up --build`
+> (one-shot form: `docker compose -f docker/docker-compose.yml run --rm scan version`).
 
 ---
 
@@ -46,7 +57,7 @@ one per detector, each containing a genuine arb — and runs them through the **
 filter's drop accounting:
 
 ```bash
-UV_NO_SYNC=1 uv run python scripts/demo.py
+PYTHONPATH=src UV_NO_SYNC=1 uv run python scripts/demo.py
 ```
 
 What to watch for as it prints:
@@ -65,10 +76,10 @@ differs (hand-built books instead of the live CLOB).
 These hit the live Polymarket API (read-only; still no signing client):
 
 ```bash
-UV_NO_SYNC=1 uv run polyarb version                 # smoke check
-UV_NO_SYNC=1 uv run polyarb scan --dry-run --passes 1   # one real discover→detect→rank pass
-UV_NO_SYNC=1 uv run polyarb backtest                # summarize stored opportunity history
-UV_NO_SYNC=1 uv run polyarb replay                  # re-print the persisted feed, oldest-first
+PYTHONPATH=src UV_NO_SYNC=1 uv run polyarb version                 # smoke check
+PYTHONPATH=src UV_NO_SYNC=1 uv run polyarb scan --dry-run --passes 1   # one real discover→detect→rank pass
+PYTHONPATH=src UV_NO_SYNC=1 uv run polyarb backtest                # summarize stored opportunity history
+PYTHONPATH=src UV_NO_SYNC=1 uv run polyarb replay                  # re-print the persisted feed, oldest-first
 ```
 
 `scan --dry-run` is the default path. `--no-dry-run` deliberately raises — execution is Phase 5
@@ -130,8 +141,8 @@ src/polyarb/
 ## 7. Correctness — why you can trust the numbers
 
 ```bash
-UV_NO_SYNC=1 uv run pytest        # 128 tests, fully offline (committed JSON fixtures)
-UV_NO_SYNC=1 uv run ruff check . && uv run mypy src
+PYTHONPATH=src UV_NO_SYNC=1 uv run pytest        # 128 tests, fully offline (committed JSON fixtures)
+PYTHONPATH=src UV_NO_SYNC=1 uv run ruff check . && PYTHONPATH=src uv run mypy src
 ```
 
 - The **profit math is property-tested** (`hypothesis`) against the SPEC identities.
