@@ -73,11 +73,21 @@ class Market(BaseModel):
     # value is a weak signal of a more contention-prone resolution (A2 — see
     # resolution/risk.classify_market). Not a void probability. Was dropped before (extra=ignore).
     custom_liveness: int = Field(default=0, alias="customLiveness")
+    # In-flight UMA resolution states (JSON-encoded list-string from Gamma, e.g. "[]" or
+    # "[\"proposed\",\"disputed\"]"). An active *dispute* is a real-time at-risk signal for
+    # held-to-resolution arbs (C1 — see resolution/risk.classify_market). Was dropped before.
+    uma_resolution_statuses: list[str] = Field(default_factory=list, alias="umaResolutionStatuses")
 
     @field_validator("custom_liveness", mode="before")
     @classmethod
     def _liveness_default(cls, value: Any) -> Any:
         return 0 if value in (None, "") else value
+
+    @field_validator("uma_resolution_statuses", mode="before")
+    @classmethod
+    def _decode_uma_statuses(cls, value: Any) -> Any:
+        # JSON-encoded list-string, but tolerate null/blank (→ []) which Gamma may send.
+        return [] if value in (None, "") else _parse_json_list(value)
 
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod

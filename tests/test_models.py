@@ -102,3 +102,16 @@ def test_market_custom_liveness_parsed() -> None:
     assert Market.model_validate(base).custom_liveness == 0  # absent → 0
     assert Market.model_validate({**base, "customLiveness": None}).custom_liveness == 0  # null → 0
     assert Market.model_validate({**base, "customLiveness": ""}).custom_liveness == 0  # blank → 0
+
+
+def test_market_uma_resolution_statuses_parsed() -> None:
+    """C1: umaResolutionStatuses (JSON list-string) round-trips; null/blank/absent coerce to []."""
+    base = {"id": "1", "conditionId": "0x1", "question": "q"}
+
+    def uma(payload: dict) -> list[str]:
+        return Market.model_validate({**base, **payload}).uma_resolution_statuses
+
+    assert uma({"umaResolutionStatuses": '["proposed", "disputed"]'}) == ["proposed", "disputed"]
+    assert uma({"umaResolutionStatuses": "[]"}) == []
+    assert uma({}) == []  # absent
+    assert uma({"umaResolutionStatuses": None}) == []  # null

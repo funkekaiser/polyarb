@@ -60,6 +60,32 @@ def _market_with_liveness(seconds: int) -> Market:
     )
 
 
+def _market_with_uma(statuses: list[str]) -> Market:
+    return Market(
+        id="1",
+        condition_id="0xA",
+        question="Q?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["y", "n"],
+        fees_enabled=True,
+        fee_type="crypto_fees_v2",  # OBJECTIVE on category alone
+        fee_rate=Decimal("0.07"),
+        uma_resolution_statuses=statuses,
+    )
+
+
+def test_active_dispute_is_at_risk() -> None:
+    # C1: an active UMA dispute → AT_RISK, overriding the otherwise-OBJECTIVE category, so the
+    # default exclude_at_risk filter drops the (contested, not-actually-guaranteed) arb.
+    assert classify_market(_market_with_uma(["proposed", "disputed"])) == ResolutionRisk.AT_RISK
+
+
+def test_proposed_without_dispute_keeps_category() -> None:
+    # "proposed" is the normal resolution flow, NOT a dispute → category stands (no over-exclusion).
+    assert classify_market(_market_with_uma(["proposed"])) == ResolutionRisk.OBJECTIVE
+    assert classify_market(_market_with_uma([])) == ResolutionRisk.OBJECTIVE
+
+
 def test_long_liveness_is_elevated() -> None:
     # A2: a longer-than-default UMA dispute window is a weak contention signal → ELEVATED
     # (rank-down, NOT hard-exclude), overriding the otherwise-OBJECTIVE crypto category.

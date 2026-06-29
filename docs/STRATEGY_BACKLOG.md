@@ -19,6 +19,8 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | A3 | **Staleness net** | drop books older than `max_book_age_s` (CLOB last-change ts; default 900s). A gross-staleness/corruption net, *not* a fine freshness filter (quiescent≠stale). |
 | B3 | **NO-basket dual** (`Σ NO < M−1`) | model-free hedge; **void-gated to OBJECTIVE legs** (the dual is uniquely fragile to a losing leg voiding — asymmetric vs the YES basket). |
 | §5 | **Opt-in partial basket** | `PartialBasketDetector`, OFF by default, DIRECTIONAL-tagged (ranks below every structural arb). EV honestly labelled **optimistic, not a floor**; worst-case loss surfaced. |
+| C3 | **Rank by absolute net $** | ranking sorts on `total_net_profit` (`size·net − gas`), not bps — real money rises, thin/low-volume artifacts sink (winner's curse). Risk tier primary, then $, then annualized. Subsumes C5. |
+| C1 | **AT_RISK on active UMA dispute** | `umaResolutionStatuses` now parsed; an active *dispute* → AT_RISK → dropped by the default `exclude_at_risk` filter. Real safety gate for held arbs; instant complement exempt. (Not a probability.) |
 | A2 | **Void — partial** | closed-leg (post-) void handled by `live_partition`; `customLiveness>default→ELEVATED` (weak). **Core pre-resolution void still OPEN** → see A2-void. |
 | — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). |
 
@@ -37,10 +39,11 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 ## Open — Tier C: ranking / risk layer (revised 2026-06-30)
 
+(C3 rank-by-$ and C1 dispute-gate are **shipped** — see above. C5 folded into C3.)
+
 | # | Str | Sev | Issue | Decision / direction |
 |---|-----|-----|-------|----------------------|
-| C3 | ✶ | HIGH | Ranking by **bps** surfaces cent-return / low-volume **artifacts** at the top (winner's curse: max over noisy estimates selects measurement error). | **Rank by absolute total net $ (`size·net − gas`), not bps.** Real money rises; thin/low-volume artifacts sink naturally (absolute $ is bounded by executable depth) without suppressing genuine edge. Keep risk tier primary, then $; annualized a minor tiebreak for held arbs. **Subsumes C5.** Model-free, no probability. |
-| C1 | ✶ | HIGH | `AT_RISK` is never assigned → the default-on `exclude_at_risk` gate excludes nothing (dead safety filter). | **Safe-money safety gate (NOT probabilistic).** Only held-to-resolution arbs can be at-risk (instant complement is exempt). Assign AT_RISK on an **active UMA dispute** (`umaResolutionStatuses` — in the payload, currently dropped) and an optional curated subjective-/manipulable-source denylist. Excludes contested structural arbs; no probability estimate. |
+| C1+ | ✶ | LOW | Optional extension of the shipped C1 dispute gate: a curated subjective-/manipulable-source denylist. | Only if a credible curated list emerges; the active-dispute signal is the real one. Don't guess categories. |
 | C2 | ✶ | — | "Risk-adjusted" ranking by clean-resolution probability `p·edge − (1−p)·loss`. | **DEFERRED (2026-06-30, Jonathan): do not implement.** It needs a void/dispute probability we can't measure (A2), and we're staying with guaranteed strategies — no probabilistic ranking for now. |
 | C4 | ✶ | MED-HIGH | Backtest "would-be P&L" is upward-biased fiction — re-counts persistent mispricings every pass, costless full capture, no realized-outcome tracking. | Dedupe to distinct economic opps; track realized resolution; label as an upper bound. |
 
@@ -63,10 +66,11 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 The remaining work splits cleanly by whether it touches guaranteed money:
 
-- **Safe-money, model-free (do these):** **C3** — rank by absolute total net $ (clear precision
-  win, de-ranks artifacts, no probability); **C1** — real AT_RISK from active UMA disputes
-  (a genuine safety gate). Then the cheap correctness items **D3** (max-leg horizon), **D1**
-  (fingerprint gate), and **C1-atomicity** (conservative size).
+- **Done (safe-money, model-free):** **C3** (rank by absolute net $) and **C1** (AT_RISK on
+  active UMA dispute) — shipped.
+- **Next, cheap correctness (all model-free):** **D3** (max-leg horizon for held arbs),
+  **D1** (enforce the fingerprint gate on hand-declared relations), **C1-atomicity**
+  (a conservative size alongside the optimistic full-walk ceiling), **B2′** (per-leg-count gas).
 - **Deferred / not pursuing now:** **C2** (probabilistic risk-adjusted ranking — needs a
   probability we can't measure). **A2-void** core stays a documented residual until a real
   signal exists. **§5** stays opt-in / off by default.

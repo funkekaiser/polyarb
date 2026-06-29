@@ -28,6 +28,17 @@ class ResolutionRisk(StrEnum):
 _UMA_DEFAULT_LIVENESS_S = 7200
 
 
+def _has_active_dispute(market: Market) -> bool:
+    """True if any of the market's UMA resolution states signals an in-flight dispute.
+
+    C1 — a contested resolution is a *real-time*, data-backed at-risk signal: the eventual
+    outcome is genuinely uncertain, so a "guaranteed" held-to-resolution arb on it isn't. We
+    match a ``disput`` substring (case-insensitive) to be robust to exact-string variation
+    ("disputed", "in_dispute", …); a bare "proposed" (normal resolution flow) is NOT flagged.
+    """
+    return any("disput" in s.lower() for s in market.uma_resolution_statuses)
+
+
 # Ordering doubles as the primary rank key (lower = preferred). DIRECTIONAL sits below every
 # structural tier so a probabilistic partial basket can never outrank a guaranteed arb, but
 # above AT_RISK so it survives the default `exclude_at_risk` filter (it's an explicit opt-in).
@@ -53,17 +64,22 @@ def risk_rank(risk: ResolutionRisk | str | None) -> int:
 
 
 def classify_market(market: Market) -> ResolutionRisk:
-    """Map a market to a resolution-risk tag (its category via fee type, plus a weak void nudge).
+    """Map a market to a resolution-risk tag from its UMA state and category.
 
-    A2 (partial) — a *longer-than-default* UMA dispute window (``custom_liveness >
-    _UMA_DEFAULT_LIVENESS_S``) is a weak signal of a more contention-prone resolution, so we
-    rank it down (ELEVATED), not exclude it. This is deliberately mild: ``customLiveness`` is the
-    dispute-window *length*, not a void probability, and on current markets it is almost always
-    0 — so it neither detects nor meaningfully gates the real A2 risk (a leg resolving 50-50 /
-    void, which breaks the basket's "exactly one pays $1" floor). **That core void risk remains
-    open** (not reliably detectable from available data — see STRATEGY_BACKLOG A2); the only
-    concrete void protection today is `live_partition` dropping already-voided *closed* legs.
+    C1 — an **active UMA dispute** (``umaResolutionStatuses`` contains a dispute) is a real,
+    data-backed at-risk signal: the resolution is being contested, so a held-to-resolution arb
+    on it is not actually guaranteed. Tag it AT_RISK so the default ``exclude_at_risk`` filter
+    drops it. (Instant complement arbs are exempt upstream in ``resolution_risk_for`` — they
+    realize before resolution, so a dispute is irrelevant to them.)
+
+    A2 (partial) — a *longer-than-default* dispute *window* (``custom_liveness >
+    _UMA_DEFAULT_LIVENESS_S``) is a much weaker, forward-looking nudge → ELEVATED (rank-down,
+    not exclude). It's the window *length*, not a void probability, and ~0% of live markets set
+    it; the core pre-resolution void risk remains open (STRATEGY_BACKLOG A2). The only concrete
+    void protection today is `live_partition` dropping already-voided *closed* legs.
     """
+    if _has_active_dispute(market):
+        return ResolutionRisk.AT_RISK
     if market.custom_liveness > _UMA_DEFAULT_LIVENESS_S:
         return ResolutionRisk.ELEVATED
     fee_type = (market.fee_type or "").lower()

@@ -271,6 +271,35 @@ def test_instant_arbs_are_resolution_risk_free() -> None:
     assert resolution_risk_for(held, by_condition) == ResolutionRisk.ELEVATED
 
 
+def test_active_dispute_excludes_held_arb_not_instant() -> None:
+    """C1: a held arb spanning a market with an active UMA dispute is tagged AT_RISK (excluded
+    by the default filter); an instant arb on the same market stays OBJECTIVE (dispute is
+    irrelevant — it realizes before resolution)."""
+    from polyarb.detectors.base import Profit, make_opportunity
+    from polyarb.engine.scanner import resolution_risk_for
+    from polyarb.resolution.risk import ResolutionRisk
+    from tests.helpers import make_market
+
+    disputed = make_market("0xD", yes="y", no="n").model_copy(
+        update={"fee_type": "crypto_fees_v2", "uma_resolution_statuses": ["disputed"]}
+    )
+    by_condition = {"0xD": disputed}
+    profit = Profit(cost=Decimal("0.90"), gross_profit=Decimal("0.10"), fees=Decimal(0))
+    held = make_opportunity(
+        detector=DetectorKind.NEGRISK_BASKET,
+        description="b",
+        condition_ids=["0xD"],
+        legs=[],
+        profit=profit,
+        executable_size=Decimal(1),
+        realizes="resolution",
+    )
+    instant = held.model_copy(update={"realizes": "instant"})
+
+    assert resolution_risk_for(held, by_condition) == ResolutionRisk.AT_RISK
+    assert resolution_risk_for(instant, by_condition) == ResolutionRisk.OBJECTIVE
+
+
 def test_scanner_skips_paused_market() -> None:
     """A market with acceptingOrders=False must not produce any opportunities.
 
