@@ -30,7 +30,7 @@ from polyarb.detectors.base import (
 )
 from polyarb.models import BookLevel, DetectorKind, Event, Leg, Market, Opportunity, OrderBook
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import is_crossed
+from polyarb.pricing.sizing import is_crossed, top_level_min_depth
 from polyarb.resolution.risk import ResolutionRisk, classify_market
 
 # A closed constituent's resolved YES price tells us how it resolved: ~0 means it LOST
@@ -155,6 +155,7 @@ class NegRiskBasketDetector:
             legs=legs,
             profit=profit,
             executable_size=size,
+            conservative_size=top_level_min_depth(ask_levels, side="buy"),
             realizes="resolution",
             event_id=event.id,
             days_by_condition=snap.days_to_resolution,
@@ -241,6 +242,7 @@ class NegRiskDualDetector:
             legs=legs,
             profit=profit,
             executable_size=size,
+            conservative_size=top_level_min_depth(ask_levels, side="buy"),
             realizes="resolution",
             event_id=event.id,
             days_by_condition=snap.days_to_resolution,

@@ -39,7 +39,7 @@ from polyarb.detectors.base import ONE, ZERO, Snapshot, make_opportunity, walk_a
 from polyarb.detectors.negrisk_basket import live_partition
 from polyarb.models import BookLevel, DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for
-from polyarb.pricing.sizing import is_crossed
+from polyarb.pricing.sizing import is_crossed, top_level_min_depth
 
 
 class PartialBasketDetector:
@@ -126,6 +126,7 @@ class PartialBasketDetector:
             legs=legs,
             profit=profit,
             executable_size=size,
+            conservative_size=top_level_min_depth(ask_levels, side="buy"),
             realizes="resolution",
             event_id=event.id,
             days_by_condition=snap.days_to_resolution,

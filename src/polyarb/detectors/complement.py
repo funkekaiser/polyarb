@@ -27,7 +27,7 @@ from polyarb.detectors.base import (
 )
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import is_crossed, walk_sell_legs
+from polyarb.pricing.sizing import is_crossed, top_level_min_depth, walk_sell_legs
 
 
 def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal) -> Profit:
@@ -91,6 +91,9 @@ class ComplementDetector:
                     ],
                     profit=profit,
                     executable_size=size,
+                    conservative_size=top_level_min_depth(
+                        [yes_book.asks, no_book.asks], side="buy"
+                    ),
                     realizes="instant",
                     gas=gas,
                 )
@@ -124,6 +127,9 @@ class ComplementDetector:
                         ],
                         profit=profit,
                         executable_size=size,
+                        conservative_size=top_level_min_depth(
+                            [yes_book.bids, no_book.bids], side="sell"
+                        ),
                         realizes="instant",
                         gas=gas,
                     )

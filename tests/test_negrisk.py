@@ -127,6 +127,9 @@ def test_depth_walk_captures_beyond_best_ask_level() -> None:
     opp = opps[0]
     assert opp.executable_size > Decimal(50)  # beyond the single best-ask-level depth
     assert opp.executable_size == Decimal(110)  # all profitable levels included
+    # C1-atomicity: conservative size = min best-level depth (50), below the full-walk 110.
+    assert opp.conservative_size == Decimal(50)
+    assert opp.conservative_size < opp.executable_size
 
 
 # ---------------------------------------------------------------------------

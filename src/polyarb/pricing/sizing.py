@@ -40,6 +40,29 @@ def executable_size(depths: list[Decimal]) -> Decimal:
     return min(depths, default=ZERO)
 
 
+def top_level_min_depth(leg_levels: list[list[BookLevel]], *, side: str) -> Decimal:
+    """Conservative one-shot size: min over legs of the size at each leg's *best* price level.
+
+    The joint depth-walk's ``executable_size`` sweeps every profitable level assuming an atomic
+    multi-leg fill (an optimistic ceiling). This is the pessimistic companion (C1-atomicity): how
+    many sets you could plausibly grab at the single best level of every leg simultaneously.
+    ``side="buy"`` → best = lowest ask price; ``side="sell"`` → best = highest bid price.
+    Non-positive price/size levels are ignored; a leg with no valid level → 0.
+    """
+    sizes: list[Decimal] = []
+    for levels in leg_levels:
+        valid = [lvl for lvl in levels if lvl.size > ZERO and lvl.price > ZERO]
+        if not valid:
+            return ZERO
+        best = (
+            min(valid, key=lambda lvl: lvl.price)
+            if side == "buy"
+            else max(valid, key=lambda lvl: lvl.price)
+        )
+        sizes.append(best.size)
+    return min(sizes, default=ZERO)
+
+
 def is_crossed(book: OrderBook) -> bool:
     """Return True if ``book`` is crossed (best bid >= best ask).
 

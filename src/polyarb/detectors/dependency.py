@@ -27,7 +27,7 @@ from polyarb.detectors.base import (
 )
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import is_crossed
+from polyarb.pricing.sizing import is_crossed, top_level_min_depth
 
 
 def dependency_profit(
@@ -102,6 +102,9 @@ class DependencyDetector:
                 ],
                 profit=profit,
                 executable_size=size,
+                conservative_size=top_level_min_depth(
+                    [yes_b_book.asks, no_a_book.asks], side="buy"
+                ),
                 realizes="resolution",
                 days_by_condition=snap.days_to_resolution,
                 gas=gas,

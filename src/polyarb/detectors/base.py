@@ -78,6 +78,7 @@ def make_opportunity(
     realizes: Literal["instant", "resolution"],
     event_id: str | None = None,
     days_by_condition: Mapping[str, int] | None = None,
+    conservative_size: Decimal | None = None,
     gas: Decimal = ZERO,
 ) -> Opportunity:
     """Assemble an Opportunity, computing gas-adjusted bps and annualized return.
@@ -123,6 +124,7 @@ def make_opportunity(
         net_profit=net_set,
         net_profit_bps=net_profit_bps,
         executable_size=executable_size,
+        conservative_size=conservative_size,
         realizes=realizes,
         days_to_resolution=days_to_resolution,
         annualized=annualized,

@@ -21,6 +21,9 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | §5 | **Opt-in partial basket** | `PartialBasketDetector`, OFF by default, DIRECTIONAL-tagged (ranks below every structural arb). EV honestly labelled **optimistic, not a floor**; worst-case loss surfaced. |
 | C3 | **Rank by absolute net $** | ranking sorts on `total_net_profit` (`size·net − gas`), not bps — real money rises, thin/low-volume artifacts sink (winner's curse). Risk tier primary, then $, then annualized. Subsumes C5. |
 | C1 | **AT_RISK on active UMA dispute** | `umaResolutionStatuses` now parsed; an active *dispute* → AT_RISK → dropped by the default `exclude_at_risk` filter. Real safety gate for held arbs; instant complement exempt. (Not a probability.) |
+| D3 | **Max-leg horizon** | held arbs annualize on `max(leg days)` over their own `condition_ids`, centralized in `make_opportunity` (capital locks until the latest leg resolves). |
+| B2′ | **Leg-scaled gas (mechanism)** | `Snapshot.gas_for(n) = gas + gas_per_leg·n`; each detector charges for its own leg count. 0/0 defaults = behavior-preserving. *Real Polygon numbers → desk.* |
+| C1-atom | **Conservative size (surface)** | `Opportunity.conservative_size` = min best-level depth across legs (`top_level_min_depth`), the pessimistic companion to the optimistic full-walk `executable_size`. Diagnostic only. *Whether ranking/filtering should use it → desk.* |
 | A2 | **Void — partial** | closed-leg (post-) void handled by `live_partition`; `customLiveness>default→ELEVATED` (weak). **Core pre-resolution void still OPEN** → see A2-void. |
 | — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). |
 
@@ -31,7 +34,7 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
 | A2-void | B,D | HIGH | Pre-resolution void/50-50 for **live** legs — no reliable predictive signal in available data (`customLiveness` is window length, not void prob). | Curated void-prone source/category denylist (needs a live-API survey) or a payoff-haircut for held arbs; else accept as a documented residual gated by C1. |
-| C1-atomicity | ✶ | HIGH | Full-walk `executable_size` assumes an **atomic** multi-leg fill; real fills are sequential and legs move/vanish (adverse selection → partial unhedged position). Optimistic ceiling, worse as N/levels grow. | Report a conservative `top_level_size` alongside the walk and rank/filter on it; or a survival haircut growing in N. Couples with A3. |
+| C1-atomicity-use | ✶ | HIGH (decision) | The conservative `conservative_size` is now **surfaced** (shipped), but ranking ($-axis) and the `MIN_NOTIONAL` filter still trust the optimistic `executable_size`. Switching them to the conservative size (or a survival-haircut blend) is a risk-appetite call. | **DESK** — Jonathan picks: keep optimistic / use conservative / haircut factor. Matters most pre-execution for honesty of rank+notional. |
 | A3-quiescence | B,D | MED | The age-net can't distinguish a corrupt stale snapshot (#180) from a quiescent-but-valid book; any threshold trades thin-market coverage for staleness safety. | Targeted #180 detector: flag a book whose `hash` reverted or that shows the 0.01/0.99 corrupt pattern, instead of a blunt age cutoff. |
 | A1-stale | B | MED | A *stale-closed* leg (Gamma says closed but still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices`. | Fetch a closed leg's book when its resolution is borderline; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. |
 | A1-riskwt | ✶ | MED | A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print. `#live/#total` and "Σ_live « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; down-weight near-fully-resolved baskets (pairs with C1/C3). |
@@ -53,8 +56,7 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 |---|-----|-----|-------|---------------|
 | D1 | D | MED | Hand-declared relations **bypass the §6 fingerprint gate** (RELATIONS.md fixed; code not). Wrong-direction relation → full-loss "lock". | Enforce fingerprint match in `add_relation`. |
 | D2 | B,C | MED* | Detectors trust `clob_token_ids[0]==YES`; a reversed-outcome market corrupts the identity. (*low confidence.) | Validate `outcomes[0]` / carry an explicit `yes_index`. |
-| D3 | B,D | MED | Multi-leg horizon should be `max(legs)` (capital locked until all required legs resolve); basket uses first-known, dependency B-then-A. | Use `max(days)` across the legs whose resolution is required. |
-| B2′ | ✶ | MED | One fixed `gas` under-charges high-N baskets (N taker orders + merge/redeem). | `gas = base + per_leg·N`. |
+| B2′-num | ✶ | MED (decision) | The leg-scaled gas *mechanism* is shipped with 0/0 defaults (gas off). Real per-leg + base Polygon/USDC gas numbers (merge/redeem + taker fills) are an ops measurement. | **DESK** — Jonathan/ops: measure and set `gas_estimate` + `gas_per_leg_estimate`. |
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded exposure; per-leg `min_order_size`/tick not enforced; no deterministic final tiebreak. | Address alongside C-layer / sizing. |
 | D6 | C | LOW | `walk_sell_legs` takes a scalar fee only (asymmetric with `walk_buy_legs`). | Accept `Decimal | Sequence[Decimal]` + reuse `_per_leg_rates`. |
 | F2 | ✶ | LOW | The walks aren't property-tested directly (pure `*_profit` fns are off the runtime path). | Property-test `walk_buy_legs`/`walk_sell_legs` (monotone marginal, prefix-optimality, fee ≥ 0). |
@@ -64,13 +66,15 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 ## Focus (next)
 
-The remaining work splits cleanly by whether it touches guaranteed money:
+The model-free no-brainers from the C-layer and the four-item review are all **shipped**:
+C3 (rank by $), C1 (dispute gate), D3 (max-leg horizon), B2′ (leg-scaled gas mechanism), and
+C1-atom (conservative-size surface).
 
-- **Done (safe-money, model-free):** **C3** (rank by absolute net $) and **C1** (AT_RISK on
-  active UMA dispute) — shipped.
-- **Next, cheap correctness (all model-free):** **D3** (max-leg horizon for held arbs),
-  **D1** (enforce the fingerprint gate on hand-declared relations), **C1-atomicity**
-  (a conservative size alongside the optimistic full-walk ceiling), **B2′** (per-leg-count gas).
-- **Deferred / not pursuing now:** **C2** (probabilistic risk-adjusted ranking — needs a
-  probability we can't measure). **A2-void** core stays a documented residual until a real
-  signal exists. **§5** stays opt-in / off by default.
+- **Remaining open, model-free (candidates for further bug-hunt/cleanup):** **A1-stale**,
+  **A1-riskwt**, **A3-quiescence**, **M3-feefloor**, **C4** (backtest upper-bound labelling),
+  **D2/D5/D6/F2** (small hardening). **D1** (fingerprint gate) is open but its absent-fingerprint
+  policy is a **DESK** decision.
+- **On Jonathan's desk (need input, see below):** D1 policy, C1-atomicity-use (which size
+  ranking/notional trust), B2′-num (real gas numbers), A2-void (curated denylist or accept).
+- **Deferred:** **C2** (probabilistic ranking — needs an unmeasurable probability). **§5** stays
+  opt-in / off by default.

@@ -8,8 +8,29 @@ import pytest
 
 from polyarb.models import BookLevel
 from polyarb.pricing.fees import taker_fee
-from polyarb.pricing.sizing import depth_at_or_better, executable_size, is_crossed, walk_buy_legs
+from polyarb.pricing.sizing import (
+    depth_at_or_better,
+    executable_size,
+    is_crossed,
+    top_level_min_depth,
+    walk_buy_legs,
+)
 from tests.helpers import make_book
+
+
+def _lvl(price: str, size: str) -> BookLevel:
+    return BookLevel(price=Decimal(price), size=Decimal(size))
+
+
+def test_top_level_min_depth_buy_and_sell() -> None:
+    # Buy: best = lowest ask per leg; min across legs of that best-level size.
+    legs = [[_lvl("0.25", "50"), _lvl("0.28", "60")], [_lvl("0.30", "40"), _lvl("0.33", "90")]]
+    assert top_level_min_depth(legs, side="buy") == Decimal(40)  # min(50, 40) at best prices
+    # Sell: best = highest bid per leg.
+    bids = [[_lvl("0.60", "30"), _lvl("0.55", "80")], [_lvl("0.50", "70")]]
+    assert top_level_min_depth(bids, side="sell") == Decimal(30)  # min(30 @0.60, 70 @0.50)
+    # A leg with no valid (positive) level → 0.
+    assert top_level_min_depth([[_lvl("0.25", "50")], [_lvl("0", "0")]], side="buy") == Decimal(0)
 
 
 def test_depth_buy_sums_asks_at_or_below_limit() -> None:

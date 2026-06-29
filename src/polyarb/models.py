@@ -275,7 +275,11 @@ class Opportunity(BaseModel):
     gas: Decimal  # gas estimate, per EXECUTION (fixed cost, not per set)
     net_profit: Decimal  # gross - fees, per set (before gas)
     net_profit_bps: Decimal  # gas-adjusted net return on deployed capital, in bps
-    executable_size: Decimal  # sets supported by book depth
+    executable_size: Decimal  # sets supported by book depth (optimistic: assumes atomic fill)
+    # Conservative one-shot size: min over legs of the best-level depth (C1-atomicity). Multi-leg
+    # fills aren't atomic, so executable_size is a ceiling; this is the pessimistic companion.
+    # Diagnostic for now — ranking/filtering still use executable_size (see STRATEGY_BACKLOG).
+    conservative_size: Decimal | None = None
     realizes: Literal["instant", "resolution"]
     days_to_resolution: int | None = None
     annualized: Decimal | None = None
