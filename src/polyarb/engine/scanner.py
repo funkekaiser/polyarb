@@ -103,6 +103,12 @@ class Scanner:
                 return token_id, await self._clob.get_order_book(token_id)
             except httpx.HTTPError:
                 return token_id, None
+            except Exception as exc:
+                # A malformed CLOB payload (bad JSON / failed model validation) is not an
+                # httpx error; without this it would propagate out of asyncio.gather and kill
+                # the entire scan pass over one bad book. Skip the token, keep the pass alive.
+                log.warning("book_fetch_failed", token_id=token_id, error=repr(exc))
+                return token_id, None
 
         results = await asyncio.gather(*(one(t) for t in token_ids))
         return {t: b for t, b in results if b is not None}
@@ -175,17 +181,24 @@ class Scanner:
         kept = rank(filt.apply(opps))
 
         for opp in kept:
-            self._store.record(opp)
-            await self._notifier.notify(opp)
-            log.info(
-                "opportunity",
-                detector=str(opp.detector),
-                net_bps=str(opp.net_profit_bps),
-                size=str(opp.executable_size),
-                risk=opp.resolution_risk,
-                realizes=opp.realizes,
-                desc=opp.description,
-            )
+            # Guard each emit independently: a store/notify failure on one opp must not abort
+            # the loop and silently drop the rest (they were already marked "seen" in the
+            # dedupe cache during filtering, so an aborted loop would suppress them for a full
+            # cooldown window).
+            try:
+                self._store.record(opp)
+                await self._notifier.notify(opp)
+                log.info(
+                    "opportunity",
+                    detector=str(opp.detector),
+                    net_bps=str(opp.net_profit_bps),
+                    size=str(opp.executable_size),
+                    risk=opp.resolution_risk,
+                    realizes=opp.realizes,
+                    desc=opp.description,
+                )
+            except Exception as exc:
+                log.error("emit_failed", detector=str(opp.detector), error=repr(exc))
         candidates_by_detector = Counter(str(opp.detector) for opp in opps)
         self._totals["passes"] += 1
         self._totals["candidates"] += len(opps)
@@ -217,16 +230,16 @@ class Scanner:
                 loop.add_signal_handler(sig, stop.set)
 
         start = loop.time()
-        completed = 0
+        attempts = 0  # scan_once invocations (success or failure); `passes` arg bounds this
         while not stop.is_set():
-            completed += 1
+            attempts += 1
             try:
                 await self.scan_once()
             except Exception as exc:  # a bad pass must not kill the loop
                 self._totals["errors"] += 1
                 metrics.SCAN_ERRORS.inc()
                 log.error("scan_pass_failed", error=repr(exc))
-            if passes and completed >= passes:
+            if passes and attempts >= passes:
                 break
             if max_seconds is not None and (loop.time() - start) >= max_seconds:
                 break
@@ -234,4 +247,6 @@ class Scanner:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=self._settings.scan_interval_seconds)
 
-        log.info("scanner_stopped", passes=completed, totals=dict(self._totals))
+        # `attempts` counts scan_once invocations; self._totals["passes"] counts the ones that
+        # completed without error, so a failed pass no longer logs a contradictory pair.
+        log.info("scanner_stopped", attempts=attempts, totals=dict(self._totals))

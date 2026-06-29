@@ -175,7 +175,9 @@ class OrderBook(BaseModel):
     @field_validator("timestamp_ms", mode="before")
     @classmethod
     def _coerce_timestamp(cls, value: Any) -> Any:
-        return int(value) if isinstance(value, str | float) else value
+        # Go via float so a fractional string ("1700000000.9") doesn't raise — int("..9")
+        # would. Plain int strings and JSON floats both round-trip correctly.
+        return int(float(value)) if isinstance(value, str | float) else value
 
     @field_validator("tick_size", "min_order_size", "last_trade_price", mode="before")
     @classmethod
@@ -184,13 +186,29 @@ class OrderBook(BaseModel):
 
     @property
     def best_bid(self) -> BookLevel | None:
-        """Highest-priced bid (computed by value, not list position)."""
-        return max(self.bids, key=lambda level: level.price, default=None)
+        """Highest-priced bid with real size (computed by value, not list position).
+
+        Zero-size levels are skipped: a phantom 0-size level at a better price would
+        otherwise become the "best" quote, yielding an opportunity with executable_size 0
+        while masking the real, fillable level just behind it.
+        """
+        return max(
+            (level for level in self.bids if level.size > 0),
+            key=lambda level: level.price,
+            default=None,
+        )
 
     @property
     def best_ask(self) -> BookLevel | None:
-        """Lowest-priced ask (computed by value, not list position)."""
-        return min(self.asks, key=lambda level: level.price, default=None)
+        """Lowest-priced ask with real size (computed by value, not list position).
+
+        Zero-size levels are skipped (see :meth:`best_bid`).
+        """
+        return min(
+            (level for level in self.asks if level.size > 0),
+            key=lambda level: level.price,
+            default=None,
+        )
 
 
 class DetectorKind(StrEnum):

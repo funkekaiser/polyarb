@@ -153,3 +153,100 @@ def test_ladder_skips_equal_bounds() -> None:
     assert ("a", "b") not in pairs and ("b", "a") not in pairs
     # only the 10000 ⇒ 8000 rung (higher ⇒ lower) survives
     assert len(rels) == 1
+
+
+# ── Second adversarial bug-hunt (2026-06-29) ──────────────────────────────────
+
+
+# Bug 9 — dependency days_to_resolution of 0 (resolves today) must not be lost to `or`.
+def test_dependency_days_zero_not_swallowed() -> None:
+    a = make_market("0xA", yes="yA", no="nA")
+    b = make_market("0xB", yes="yB", no="nB")
+    snap = Snapshot(
+        markets=[a, b],
+        relations=[Relation("0xA", "0xB", "A ⇒ B")],
+        books={
+            "nA": make_book("nA", asks=[("0.30", "50")]),
+            "yB": make_book("yB", asks=[("0.30", "80")]),
+        },
+        days_to_resolution={"0xB": 0, "0xA": 365},  # B today; falsy 0 must win, not 365
+    )
+    opp = next(iter(DependencyDetector().detect(snap)))
+    assert opp.days_to_resolution == 0
+    # floored to 1 day -> maximal annualization, not the 365-day (~1x) figure.
+    assert opp.annualized == (opp.net_profit / opp.cost) * Decimal(365)
+
+
+# Bug 10 — a malformed (non-httpx) book error must not kill the whole scan pass.
+def test_fetch_books_survives_non_http_error() -> None:
+    from polyarb.config import Settings
+    from polyarb.engine.scanner import Scanner
+
+    class _FakeClob:
+        async def get_order_book(self, token_id: str) -> OrderBook:
+            if token_id == "bad":
+                raise ValueError("malformed CLOB payload")  # not an httpx.HTTPError
+            return make_book(token_id, asks=[("0.40", "10")])
+
+    scanner = Scanner(Settings(), gamma=None, clob=_FakeClob(), store=None)  # type: ignore[arg-type]
+
+    async def run() -> dict[str, OrderBook]:
+        return await scanner._fetch_books({"bad", "good"})
+
+    books = asyncio.run(run())
+    assert set(books) == {"good"}  # bad token skipped, pass survives
+
+
+# Bug 11 — webhook notify must swallow httpx.InvalidURL (not an httpx.HTTPError).
+def test_webhook_notify_swallows_invalid_url() -> None:
+    import httpx
+
+    from polyarb.sinks.notify import WebhookNotifier
+
+    class _RaisingClient:
+        async def post(self, *args: object, **kwargs: object) -> object:
+            raise httpx.InvalidURL("malformed url")
+
+        async def aclose(self) -> None:
+            pass
+
+    opp = make_opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="d",
+        condition_ids=["0x1"],
+        legs=[],
+        profit=_profit(),
+        executable_size=ONE,
+        realizes="instant",
+        days_to_resolution=None,
+    )
+    notifier = WebhookNotifier("not-a-url", client=_RaisingClient())  # type: ignore[arg-type]
+    asyncio.run(notifier.notify(opp))  # must not raise
+
+
+# Bug 12 — a fractional timestamp delivered as a string must coerce, not raise.
+def test_order_book_coerces_string_float_timestamp() -> None:
+    book = OrderBook(market="0xc", asset_id="t", timestamp_ms="1700000000.9", bids=[], asks=[])
+    assert book.timestamp_ms == 1700000000
+
+
+# Bug 13 — a zero-size level must not become the best quote (phantom size-0 opp / missed arb).
+def test_zero_size_levels_skipped_in_best_quote() -> None:
+    book = make_book(
+        "t",
+        asks=[("0.40", "0"), ("0.41", "100")],
+        bids=[("0.39", "0"), ("0.30", "100")],
+    )
+    assert book.best_ask is not None and book.best_ask.price == Decimal("0.41")
+    assert book.best_ask.size == Decimal("100")
+    assert book.best_bid is not None and book.best_bid.price == Decimal("0.30")
+
+
+# Bug 14 — "geopolitics" fee type must not match the "politics" → ELEVATED substring.
+def test_geopolitics_not_classified_elevated() -> None:
+    from polyarb.resolution.risk import ResolutionRisk, classify_market
+
+    geo = make_market("0xG").model_copy(update={"fee_type": "geopolitics_fees"})
+    assert classify_market(geo) == ResolutionRisk.STANDARD
+    pol = make_market("0xP").model_copy(update={"fee_type": "politics_fees"})
+    assert classify_market(pol) == ResolutionRisk.ELEVATED

@@ -81,7 +81,7 @@ yourself. Clean up with `git worktree remove --force <path>` afterward.
 
 ## 4. Bugs found and fixed
 
-All eight are covered by `tests/test_bugfixes.py`.
+All fourteen are covered by `tests/test_bugfixes.py` (first hunt: 1–8; second hunt: 9–14).
 
 | # | Sev | Where | Bug | Fix |
 |---|-----|-------|-----|-----|
@@ -93,6 +93,30 @@ All eight are covered by `tests/test_bugfixes.py`.
 | 6 | Low | `sinks/notify.py` | `WebhookNotifier`'s self-created `AsyncClient` was never closed (no `aclose` on the `Notifier` protocol). | Add `aclose` to the protocol + `NullNotifier`; CLI closes the notifier on shutdown. |
 | 7 | Med | `detectors/dependency.py` + `resolution/relations.py` | A self-loop relation `A⇒A` made the dependency detector buy `YES_A + NO_A` (a *complement*) and mislabel it "dependency violation". | Detector skips `antecedent == consequent`; `add_relation` rejects self-loops. |
 | 8 | Med | `resolution/relations.py` ladder | Two markets with the **same** bound sorted adjacent and got a spurious relation (equal bounds are unordered — no implication). | Skip equal-bound adjacent pairs in all three ladders. |
+
+### Second hunt (2026-06-29) — six more, all in `tests/test_bugfixes.py` (Bugs 9–14)
+
+A second three-agent hunt (detectors/pricing, engine/sinks, clients/models) plus an Opus
+"statistician committee" on strategy soundness. The mechanical bugs below were fixed; the
+committee's *strategy* critiques (sizing-walks-only-top-of-book, gas defaulted to 0, no
+staleness/adverse-selection gate, the dead `AT_RISK` tag as a risk-policy choice, ranking
+objective) are tracked separately as design decisions, not yet implemented.
+
+| # | Sev | Where | Bug | Fix |
+|---|-----|-------|-----|-----|
+| 9 | Med | `detectors/dependency.py` | `days = get(B) or get(A)` — a legitimate `days_to_resolution == 0` (resolves today) is falsy, so B's horizon was silently replaced by A's, mis-annualizing the opp by up to 365×. | Explicit `None` check instead of `or`. |
+| 10 | Med | `engine/scanner.py` `_fetch_books` | `one()` caught only `httpx.HTTPError`; a malformed CLOB payload (bad JSON / validation error) propagated out of `asyncio.gather` and **killed the whole pass** — same class as Bug 1, adjacent code. | Also catch `Exception` (not `BaseException`/cancel), log, skip the token. |
+| 11 | Med | `sinks/notify.py` `WebhookNotifier` | `httpx.InvalidURL` (a malformed `NOTIFIER_URL`) is **not** an `httpx.HTTPError`, so it escaped `notify()` and wedged the emit loop, suppressing every subsequent opp for a cooldown window. | Broaden the second `except` to `Exception`; the protocol guarantees `notify()` never raises. |
+| 12 | Low | `models.py` `OrderBook._coerce_timestamp` | A fractional timestamp delivered as a **string** (`"…​.9"`) raised on `int("…​.9")` (Bug 4 only covered the float case). | Coerce via `int(float(value))`. |
+| 13 | Low | `models.py` `best_bid`/`best_ask` | A phantom **zero-size** level at a better price became the "best" quote → opp with `executable_size 0`, masking the real fillable level behind it. | Skip `size == 0` levels when computing the best quote. |
+| 14 | Low | `resolution/risk.py` `classify_market` | Substring test `"politics" in fee_type` also matches **"geopolitics"** — a future paid-geopolitics tier would be mis-tagged `ELEVATED`. | Exclude `"geopolitics"` from the politics branch. |
+
+Two flagged-but-not-fixed items from this hunt: the rate-limiter holding its lock across
+`asyncio.sleep` (assessed — the per-bucket serialization is *correct* rate-limiting, not a
+bug) and the websocket async-generator leaking a connection if abandoned mid-stream
+(forward-looking: the scan loop uses REST polling today, so `ws.py` is off the live path).
+The emit loop also now guards each opp's store/notify independently, and the scanner's stop
+log reports `attempts` (not a count that contradicted `totals["passes"]`).
 
 ## 5. Known limitations we deliberately did **not** "fix"
 

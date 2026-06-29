@@ -66,8 +66,11 @@ class WebhookNotifier:
                 url=self._url,
                 status=exc.response.status_code,
             )
-        except httpx.HTTPError as exc:
-            log.warning("webhook_transport_error", url=self._url, error=str(exc))
+        except Exception as exc:
+            # Protocol guarantee: notify() must never raise. httpx.InvalidURL (a malformed
+            # NOTIFIER_URL) is NOT an httpx.HTTPError, so a narrower catch would let it escape
+            # into the scanner's emit loop and wedge it. Swallow everything non-Cancel here.
+            log.warning("webhook_error", url=self._url, error=str(exc))
 
     async def aclose(self) -> None:
         """Close the internal client (no-op when an external client was injected)."""

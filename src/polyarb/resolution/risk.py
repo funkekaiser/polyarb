@@ -46,7 +46,7 @@ def classify_market(market: Market) -> ResolutionRisk:
     fee_type = (market.fee_type or "").lower()
     if any(token in fee_type for token in ("crypto", "finance", "price", "sports")):
         return ResolutionRisk.OBJECTIVE
-    if "politics" in fee_type:
+    if "politics" in fee_type and "geopolitics" not in fee_type:
         return ResolutionRisk.ELEVATED
     # mentions/culture/economics/weather/general and fee-free geopolitics → standard.
     return ResolutionRisk.STANDARD
