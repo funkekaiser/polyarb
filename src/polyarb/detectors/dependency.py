@@ -48,6 +48,7 @@ class DependencyDetector:
 
     def detect(self, snap: Snapshot) -> Iterator[Opportunity]:
         by_condition = {m.condition_id: m for m in snap.markets}
+        gas = snap.gas_for(2)  # dependency is always a 2-leg execution (YES_B + NO_A) (B2')
         for relation in snap.relations:
             if relation.antecedent_condition_id == relation.consequent_condition_id:
                 continue  # a self-loop A⇒A is not a dependency (it would mis-label a complement)
@@ -73,7 +74,7 @@ class DependencyDetector:
             result = walk_and_size_buy_basket(
                 [yes_b_book.asks, no_a_book.asks],
                 [fee_rate_for(market_b), fee_rate_for(market_a)],
-                snap.gas,
+                gas,
             )
             if result is None:
                 continue
@@ -109,5 +110,5 @@ class DependencyDetector:
                 executable_size=size,
                 realizes="resolution",
                 days_to_resolution=days,
-                gas=snap.gas,
+                gas=gas,
             )

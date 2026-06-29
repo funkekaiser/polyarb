@@ -50,6 +50,7 @@ class ComplementDetector:
     kind: ClassVar[DetectorKind] = DetectorKind.COMPLEMENT
 
     def detect(self, snap: Snapshot) -> Iterator[Opportunity]:
+        gas = snap.gas_for(2)  # complement is always a 2-leg execution (under or over) (B2')
         for market in snap.markets:
             if not market.is_binary:
                 continue
@@ -65,7 +66,7 @@ class ComplementDetector:
             # Under: buy both asks across all profitable depth, merge. The helper applies the
             # gas-realizability guard; a None result leaves the over branch below reachable
             # (they're mutually exclusive on a non-crossed book, but kept independent).
-            under = walk_and_size_buy_basket([yes_book.asks, no_book.asks], fee_rate, snap.gas)
+            under = walk_and_size_buy_basket([yes_book.asks, no_book.asks], fee_rate, gas)
             if under is not None:
                 size, leg_costs, profit = under
                 yield make_opportunity(
@@ -91,7 +92,7 @@ class ComplementDetector:
                     profit=profit,
                     executable_size=size,
                     realizes="instant",
-                    gas=snap.gas,
+                    gas=gas,
                 )
 
             # Over: split collateral across all profitable depth, sell both bids.
@@ -100,7 +101,7 @@ class ComplementDetector:
                 proceeds_ps = sum(leg_proceeds, ZERO) / size
                 profit = Profit(cost=ONE, gross_profit=proceeds_ps - ONE, fees=fees / size)
                 # Fix 4: emit only when the trade clears the fixed per-execution gas cost.
-                if size * profit.net_profit - snap.gas > ZERO:
+                if size * profit.net_profit - gas > ZERO:
                     yield make_opportunity(
                         detector=self.kind,
                         description=f"complement over: {market.question}",
@@ -124,5 +125,5 @@ class ComplementDetector:
                         profit=profit,
                         executable_size=size,
                         realizes="instant",
-                        gas=snap.gas,
+                        gas=gas,
                     )

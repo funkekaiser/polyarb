@@ -200,6 +200,7 @@ class Scanner:
             markets=markets,
             relations=self._relations,
             gas=s.gas_estimate,
+            gas_per_leg=s.gas_per_leg_estimate,
             days_to_resolution=_days_to_resolution(markets, now),
         )
         opps.extend(self._complement.detect(global_snap))
@@ -231,6 +232,7 @@ class Scanner:
                 books=event_books,
                 event=event,
                 gas=s.gas_estimate,
+                gas_per_leg=s.gas_per_leg_estimate,
                 days_to_resolution=_days_to_resolution(event.markets, now),
             )
             opps.extend(self._negrisk.detect(event_snap))

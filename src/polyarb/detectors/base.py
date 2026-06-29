@@ -47,8 +47,17 @@ class Snapshot:
     event: Event | None = None
     markets: list[Market] = field(default_factory=list)
     relations: list[Relation] = field(default_factory=list)
-    gas: Decimal = ZERO  # per-execution (fixed) round-trip gas estimate in USDC
+    gas: Decimal = ZERO  # fixed per-execution component (merge/redeem), USDC
+    gas_per_leg: Decimal = ZERO  # per-leg component (each leg ≈ one taker fill) (B2')
     days_to_resolution: dict[str, int] = field(default_factory=dict)  # condition_id -> days
+
+    def gas_for(self, n_legs: int) -> Decimal:
+        """Per-execution gas for an ``n_legs`` arb: fixed base + per-leg (B2').
+
+        A 2-leg complement and a 12-leg basket don't cost the same on-chain (N taker fills +
+        a merge/redeem), so gas scales with leg count. Both components default to 0, so until
+        they're configured this is exactly the old flat behavior (`gas`)."""
+        return self.gas + self.gas_per_leg * n_legs
 
 
 @runtime_checkable

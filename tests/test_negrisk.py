@@ -693,3 +693,25 @@ def test_dual_skips_on_missing_no_book() -> None:
     snap = _dual_snapshot(["0.6", "0.6", "0.6"])
     del snap.books["n2"]  # a live outcome with no NO book → can't lock the dual
     assert list(NegRiskDualDetector().detect(snap)) == []
+
+
+# ---------------------------------------------------------------------------
+# B2' — gas scales by leg count (gas = base + per_leg * N)
+# ---------------------------------------------------------------------------
+
+
+def test_gas_for_scales_by_leg_count() -> None:
+    snap = Snapshot(gas=Decimal("1.00"), gas_per_leg=Decimal("0.50"))
+    assert snap.gas_for(2) == Decimal("2.00")  # 1 + 0.5*2
+    assert snap.gas_for(12) == Decimal("7.00")  # 1 + 0.5*12
+    assert Snapshot().gas_for(5) == ZERO  # 0/0 defaults → gas off
+
+
+def test_per_leg_gas_suppresses_basket() -> None:
+    # 3 outcomes @0.30: net 0.10/set, size 100 → total_net 10.00 before gas.
+    base = _three_outcome_snapshot(["0.30", "0.30", "0.30"])
+    # per_leg=4 → gas = 0 + 4*3 = 12 > 10 → suppressed; per_leg=3 → gas = 9 < 10 → emits.
+    hi = Snapshot(event=base.event, books=base.books, gas_per_leg=Decimal("4"))
+    assert list(NegRiskBasketDetector().detect(hi)) == []
+    lo = Snapshot(event=base.event, books=base.books, gas_per_leg=Decimal("3"))
+    assert len(list(NegRiskBasketDetector().detect(lo))) == 1

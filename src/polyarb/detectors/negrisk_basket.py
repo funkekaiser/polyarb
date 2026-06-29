@@ -130,8 +130,9 @@ class NegRiskBasketDetector:
 
         # Depth-walk every live outcome's YES asks: buy one share of each per set; exactly one
         # outcome pays 1 at resolution, so a completed set is worth payoff=1. None ⇒ no
-        # profitable depth or doesn't clear gas.
-        result = walk_and_size_buy_basket(ask_levels, fee_rates, snap.gas)
+        # profitable depth or doesn't clear gas (scaled by leg count, B2').
+        gas = snap.gas_for(len(token_ids))
+        result = walk_and_size_buy_basket(ask_levels, fee_rates, gas)
         if result is None:
             return
         size, leg_costs, profit = result
@@ -165,7 +166,7 @@ class NegRiskBasketDetector:
             realizes="resolution",
             event_id=event.id,
             days_to_resolution=days,
-            gas=snap.gas,
+            gas=gas,
         )
 
 
@@ -224,7 +225,8 @@ class NegRiskDualDetector:
         # M outcomes resolve NO, so a completed set is worth payoff = M-1. None ⇒ no profitable
         # depth or doesn't clear gas.
         payoff = Decimal(len(token_ids) - 1)
-        result = walk_and_size_buy_basket(ask_levels, fee_rates, snap.gas, payoff=payoff)
+        gas = snap.gas_for(len(token_ids))
+        result = walk_and_size_buy_basket(ask_levels, fee_rates, gas, payoff=payoff)
         if result is None:
             return
         size, leg_costs, profit = result
@@ -258,5 +260,5 @@ class NegRiskDualDetector:
             realizes="resolution",
             event_id=event.id,
             days_to_resolution=days,
-            gas=snap.gas,
+            gas=gas,
         )

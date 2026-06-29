@@ -97,7 +97,8 @@ class PartialBasketDetector:
             return  # no residual mass ⇒ not a partial bet (enforces the 0 < p < 1 invariant)
         # Size S where the marginal VWAP stays below p (payoff=p) → EV/set = p - cost_ps > 0,
         # and the total EV must clear the per-execution gas.
-        result = walk_and_size_buy_basket(ask_levels, fee_rates, snap.gas, payoff=p)
+        gas = snap.gas_for(len(token_ids))  # buyable subset size = N taker fills (B2')
+        result = walk_and_size_buy_basket(ask_levels, fee_rates, gas, payoff=p)
         if result is None:
             return
         size, leg_costs, profit = result
@@ -136,5 +137,5 @@ class PartialBasketDetector:
             realizes="resolution",
             event_id=event.id,
             days_to_resolution=days,
-            gas=snap.gas,
+            gas=gas,
         )
