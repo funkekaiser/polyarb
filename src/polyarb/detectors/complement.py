@@ -17,10 +17,17 @@ from collections.abc import Iterator
 from decimal import Decimal
 from typing import ClassVar
 
-from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
+from polyarb.detectors.base import (
+    ONE,
+    ZERO,
+    Profit,
+    Snapshot,
+    make_opportunity,
+    walk_and_size_buy_basket,
+)
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import is_crossed, walk_buy_legs, walk_sell_legs
+from polyarb.pricing.sizing import is_crossed, walk_sell_legs
 
 
 def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal) -> Profit:
@@ -55,41 +62,37 @@ class ComplementDetector:
                 continue
             fee_rate = fee_rate_for(market)
 
-            # Under: buy both asks across all profitable depth, merge.
-            size, leg_costs, fees = walk_buy_legs([yes_book.asks, no_book.asks], fee_rate)
-            if size > ZERO:
-                cost_ps = sum(leg_costs, ZERO) / size
-                profit = Profit(cost=cost_ps, gross_profit=ONE - cost_ps, fees=fees / size)
-                # Fix 4: emit only when the trade clears the fixed per-execution gas cost.
-                # Use a guard, NOT `continue` — `continue` would also skip the over branch
-                # below (currently harmless since under/over are mutually exclusive on a
-                # non-crossed book, but the guard keeps that independence explicit).
-                if size * profit.net_profit - snap.gas > ZERO:
-                    yield make_opportunity(
-                        detector=self.kind,
-                        description=f"complement under: {market.question}",
-                        condition_ids=[market.condition_id],
-                        legs=[
-                            Leg(
-                                token_id=market.yes_token_id,
-                                side="buy",
-                                price=leg_costs[0] / size,
-                                size=size,
-                                outcome="Yes",
-                            ),
-                            Leg(
-                                token_id=market.no_token_id,
-                                side="buy",
-                                price=leg_costs[1] / size,
-                                size=size,
-                                outcome="No",
-                            ),
-                        ],
-                        profit=profit,
-                        executable_size=size,
-                        realizes="instant",
-                        gas=snap.gas,
-                    )
+            # Under: buy both asks across all profitable depth, merge. The helper applies the
+            # gas-realizability guard; a None result leaves the over branch below reachable
+            # (they're mutually exclusive on a non-crossed book, but kept independent).
+            under = walk_and_size_buy_basket([yes_book.asks, no_book.asks], fee_rate, snap.gas)
+            if under is not None:
+                size, leg_costs, profit = under
+                yield make_opportunity(
+                    detector=self.kind,
+                    description=f"complement under: {market.question}",
+                    condition_ids=[market.condition_id],
+                    legs=[
+                        Leg(
+                            token_id=market.yes_token_id,
+                            side="buy",
+                            price=leg_costs[0] / size,
+                            size=size,
+                            outcome="Yes",
+                        ),
+                        Leg(
+                            token_id=market.no_token_id,
+                            side="buy",
+                            price=leg_costs[1] / size,
+                            size=size,
+                            outcome="No",
+                        ),
+                    ],
+                    profit=profit,
+                    executable_size=size,
+                    realizes="instant",
+                    gas=snap.gas,
+                )
 
             # Over: split collateral across all profitable depth, sell both bids.
             size, leg_proceeds, fees = walk_sell_legs([yes_book.bids, no_book.bids], fee_rate)

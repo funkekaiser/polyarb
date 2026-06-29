@@ -18,10 +18,16 @@ from collections.abc import Iterator
 from decimal import Decimal
 from typing import ClassVar
 
-from polyarb.detectors.base import ONE, ZERO, Profit, Snapshot, make_opportunity
+from polyarb.detectors.base import (
+    ONE,
+    Profit,
+    Snapshot,
+    make_opportunity,
+    walk_and_size_buy_basket,
+)
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
-from polyarb.pricing.sizing import is_crossed, walk_buy_legs
+from polyarb.pricing.sizing import is_crossed
 
 
 def dependency_profit(
@@ -62,19 +68,16 @@ class DependencyDetector:
                 continue  # stale/erroneous data; skip this relation
 
             # Depth-walk both legs (YES_B, NO_A): buy one share of each per set; the worst case
-            # (A occurs ⇒ B occurs) guarantees a completed set is worth payoff=1.
-            size, leg_costs, fees = walk_buy_legs(
+            # (A occurs ⇒ B occurs) guarantees a completed set is worth payoff=1. None ⇒ no
+            # profitable depth or doesn't clear gas.
+            result = walk_and_size_buy_basket(
                 [yes_b_book.asks, no_a_book.asks],
                 [fee_rate_for(market_b), fee_rate_for(market_a)],
-                payoff=ONE,
+                snap.gas,
             )
-            if size <= ZERO:
+            if result is None:
                 continue
-            cost_ps = sum(leg_costs, ZERO) / size
-            profit = Profit(cost=cost_ps, gross_profit=ONE - cost_ps, fees=fees / size)
-            # Emit only when the trade clears the fixed per-execution gas cost.
-            if size * profit.net_profit - snap.gas <= ZERO:
-                continue
+            size, leg_costs, profit = result
 
             # Use B's horizon, falling back to A's — but with an explicit None check, not
             # `or`: a legitimate days_to_resolution of 0 (resolves today) is falsy and would

@@ -8,6 +8,7 @@ from polyarb.detectors.base import Snapshot
 from polyarb.detectors.negrisk_basket import (
     NegRiskBasketDetector,
     basket_profit,
+    live_partition,
     negrisk_convert_pnl,
 )
 from polyarb.models import Event, Market
@@ -501,6 +502,31 @@ def test_single_live_leg_after_eliminations_emits_nothing() -> None:
     books = {"yL": make_book("yL", asks=[("0.30", "100")])}
     snap = Snapshot(event=event, books=books)
     assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_live_partition_skip_augmented_seam() -> None:
+    """live_partition skips augmented by default but keeps it when skip_augmented=False.
+
+    Locks the seam the YES basket / NO-dual split relies on: the YES basket needs full
+    exhaustiveness (skip augmented), but the NO-dual needs only mutual exclusivity, so it will
+    call live_partition(skip_augmented=False). Both should return the 3 live legs there.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(3)
+    ]
+    augmented = Event(
+        id="9",
+        title="Augmented event",
+        neg_risk=True,
+        enable_neg_risk=True,
+        neg_risk_augmented=True,
+        markets=markets,
+    )
+    assert live_partition(augmented) is None  # default skip_augmented=True
+    live = live_partition(augmented, skip_augmented=False)
+    assert live is not None
+    assert [m.condition_id for m in live] == ["0x0", "0x1", "0x2"]
 
 
 def test_neg_risk_other_leg_included_in_basket() -> None:

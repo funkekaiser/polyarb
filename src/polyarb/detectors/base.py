@@ -12,12 +12,13 @@ fees (per set, before gas). Gas is a fixed per-execution cost applied in
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import ClassVar, Literal, Protocol, runtime_checkable
 
-from polyarb.models import DetectorKind, Event, Leg, Market, Opportunity, OrderBook
+from polyarb.models import BookLevel, DetectorKind, Event, Leg, Market, Opportunity, OrderBook
+from polyarb.pricing.sizing import walk_buy_legs
 from polyarb.resolution.relations import Relation
 
 ZERO = Decimal(0)
@@ -104,3 +105,26 @@ def make_opportunity(
         days_to_resolution=days_to_resolution,
         annualized=annualized,
     )
+
+
+def walk_and_size_buy_basket(
+    ask_levels: list[list[BookLevel]],
+    fee_rates: Decimal | Sequence[Decimal],
+    gas: Decimal,
+    payoff: Decimal = ONE,
+) -> tuple[Decimal, list[Decimal], Profit] | None:
+    """Depth-walk a set of buy legs, size them at VWAP, and apply the gas-realizability guard.
+
+    Shared by the buy-side detectors (complement-under, negrisk basket, dependency): each buys
+    one share of every leg per set for a set worth ``payoff``. Returns ``(size, leg_costs,
+    profit)`` — per-set economics over ``size`` sets — or ``None`` when there is no profitable
+    depth or the total net (``size * net_profit``) doesn't clear the fixed per-execution ``gas``.
+    """
+    size, leg_costs, fees = walk_buy_legs(ask_levels, fee_rates, payoff=payoff)
+    if size <= ZERO:
+        return None
+    cost_ps = sum(leg_costs, ZERO) / size
+    profit = Profit(cost=cost_ps, gross_profit=payoff - cost_ps, fees=fees / size)
+    if size * profit.net_profit - gas <= ZERO:
+        return None
+    return size, leg_costs, profit
