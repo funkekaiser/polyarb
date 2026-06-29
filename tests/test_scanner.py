@@ -135,3 +135,32 @@ def test_scanner_skips_market_without_book() -> None:
     opps, store = _run_scan(books)
     assert opps == []
     store.close()
+
+
+def test_instant_arbs_are_resolution_risk_free() -> None:
+    """An instant (complement) arb is tagged OBJECTIVE even on an elevated-category market;
+    a held arb takes the market's real risk. (Backlog D4 — instant arbs never reach
+    resolution, so resolution risk must not demote or exclude them.)"""
+    from polyarb.detectors.base import Profit, make_opportunity
+    from polyarb.engine.scanner import resolution_risk_for
+    from polyarb.resolution.risk import ResolutionRisk
+    from tests.helpers import make_market
+
+    politics = make_market("0xP", yes="y", no="n").model_copy(update={"fee_type": "politics"})
+    by_condition = {"0xP": politics}
+    profit = Profit(cost=Decimal("0.90"), gross_profit=Decimal("0.10"), fees=Decimal(0))
+
+    instant = make_opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="c",
+        condition_ids=["0xP"],
+        legs=[],
+        profit=profit,
+        executable_size=Decimal(1),
+        realizes="instant",
+        days_to_resolution=None,
+    )
+    held = instant.model_copy(update={"realizes": "resolution"})
+
+    assert resolution_risk_for(instant, by_condition) == ResolutionRisk.OBJECTIVE
+    assert resolution_risk_for(held, by_condition) == ResolutionRisk.ELEVATED

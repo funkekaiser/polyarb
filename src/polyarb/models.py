@@ -20,7 +20,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 
 def _parse_json_list(value: Any) -> Any:
@@ -228,10 +228,12 @@ class Leg(BaseModel):
 
 
 class Opportunity(BaseModel):
-    """A detected structural arb, scored per unit set and net of fees + gas.
+    """A detected structural arb, with per-set cost/profit fields and execution-level totals.
 
-    All monetary fields are *per set* (one unit of the locked position). ``executable_size``
-    is how many sets the books support; total profit = ``net_profit * executable_size``.
+    ``cost``, ``gross_profit``, ``fees``, and ``net_profit`` are *per set* (one unit of the
+    locked position). ``gas`` is a fixed per-execution cost (one merge/split/settlement tx,
+    regardless of how many sets are traded). ``total_net_profit`` and ``net_profit_bps`` are
+    gas-adjusted execution-level figures: they reflect the economics of the whole trade.
     """
 
     detector: DetectorKind
@@ -240,13 +242,19 @@ class Opportunity(BaseModel):
     condition_ids: list[str] = Field(default_factory=list)
     legs: list[Leg] = Field(default_factory=list)
     cost: Decimal  # capital deployed per set
-    gross_profit: Decimal  # before fees/gas, per set
+    gross_profit: Decimal  # before fees, per set
     fees: Decimal  # total taker fees, per set
-    gas: Decimal  # gas estimate, per set
-    net_profit: Decimal  # gross - fees - gas, per set
-    net_profit_bps: Decimal  # net_profit / cost, in basis points
+    gas: Decimal  # gas estimate, per EXECUTION (fixed cost, not per set)
+    net_profit: Decimal  # gross - fees, per set (before gas)
+    net_profit_bps: Decimal  # gas-adjusted net return on deployed capital, in bps
     executable_size: Decimal  # sets supported by book depth
     realizes: Literal["instant", "resolution"]
     days_to_resolution: int | None = None
     annualized: Decimal | None = None
     resolution_risk: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_net_profit(self) -> Decimal:
+        """Net dollars after the per-execution gas cost, across executable_size."""
+        return self.executable_size * self.net_profit - self.gas

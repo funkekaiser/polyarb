@@ -38,7 +38,7 @@ from polyarb.resolution.relations import (
     generate_dag_relations,
     generate_ladder_relations,
 )
-from polyarb.resolution.risk import aggregate_risk
+from polyarb.resolution.risk import ResolutionRisk, aggregate_risk
 from polyarb.sinks.notify import Notifier, NullNotifier
 from polyarb.sinks.store import OpportunityStore
 
@@ -59,6 +59,20 @@ def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
         end = m.end_date if m.end_date.tzinfo is not None else m.end_date.replace(tzinfo=UTC)
         out[m.condition_id] = max((end - now).days, 0)
     return out
+
+
+def resolution_risk_for(opp: Opportunity, markets_by_condition: dict[str, Market]) -> str:
+    """Resolution-risk tag for an opportunity.
+
+    Instant arbs (complement merge/split) realize *before* resolution, so how the market
+    eventually resolves is irrelevant to the payoff — tag them OBJECTIVE so a market's category
+    can't demote or hard-exclude genuinely risk-free money. Held-to-resolution arbs take the
+    worst risk across the markets they span.
+    """
+    if opp.realizes == "instant":
+        return ResolutionRisk.OBJECTIVE
+    spanned = [markets_by_condition[c] for c in opp.condition_ids if c in markets_by_condition]
+    return aggregate_risk(spanned)
 
 
 class Scanner:
@@ -173,9 +187,7 @@ class Scanner:
             )
 
         for opp in opps:
-            opp.resolution_risk = aggregate_risk(
-                [by_condition[c] for c in opp.condition_ids if c in by_condition]
-            )
+            opp.resolution_risk = resolution_risk_for(opp, by_condition)
 
         filt = OpportunityFilter(s, self._dedupe)
         kept = rank(filt.apply(opps))

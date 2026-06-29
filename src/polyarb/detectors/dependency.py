@@ -3,9 +3,10 @@
 When the identity is violated (``price(A) > price(B)``) you can lock a profit by buying
 ``YES_B`` + ``NO_A``:
 
-    cost      = a_yes,B + a_no,A           (best asks of B-YES and A-NO)
-    min payoff = 1                          (worst case A occurs ⇒ B occurs)
-    net_profit ≥ price(A) - price(B) - f - g   (paid at resolution)
+    cost               = a_yes,B + a_no,A           (best asks of B-YES and A-NO)
+    min payoff         = 1                           (worst case A occurs ⇒ B occurs)
+    net_profit (per set) ≥ price(A) - price(B) - f  (paid at resolution)
+    total_net_profit   = size * net_profit - gas     (gas applied once at execution level)
 
 Relations are declared (``resolution.relations``), never inferred from text. This detector
 uses the *actual* NO_A ask from the book rather than the ``1 - a_yes,A`` approximation.
@@ -28,13 +29,12 @@ def dependency_profit(
     a_no_a: Decimal,
     fee_rate_b: Decimal,
     fee_rate_a: Decimal,
-    gas: Decimal,
 ) -> Profit:
     """Buy YES_B + NO_A. Cost = a_yes_b + a_no_a; guaranteed min payoff = 1."""
     cost = a_yes_b + a_no_a
     gross = ONE - cost
     fees = taker_fee(a_yes_b, ONE, fee_rate_b) + taker_fee(a_no_a, ONE, fee_rate_a)
-    return Profit(cost=cost, gross_profit=gross, fees=fees, gas=gas)
+    return Profit(cost=cost, gross_profit=gross, fees=fees)
 
 
 class DependencyDetector:
@@ -66,7 +66,6 @@ class DependencyDetector:
                 a_no_a.price,
                 fee_rate_for(market_b),
                 fee_rate_for(market_a),
-                snap.gas,
             )
             if profit.net_profit <= ZERO:
                 continue
@@ -107,4 +106,5 @@ class DependencyDetector:
                 executable_size=size,
                 realizes="resolution",
                 days_to_resolution=days,
+                gas=snap.gas,
             )

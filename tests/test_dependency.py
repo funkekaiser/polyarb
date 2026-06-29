@@ -14,7 +14,7 @@ ZERO = Decimal(0)
 
 def test_dependency_profit_formula() -> None:
     # cost = a_yes_B + a_no_A; min payoff 1.
-    p = dependency_profit(Decimal("0.30"), Decimal("0.30"), ZERO, ZERO, ZERO)
+    p = dependency_profit(Decimal("0.30"), Decimal("0.30"), ZERO, ZERO)
     assert p.cost == Decimal("0.60")
     assert p.gross_profit == Decimal("0.40")
 

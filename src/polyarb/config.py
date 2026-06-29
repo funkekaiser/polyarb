@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     # --- discovery / fetch bounds ---
     event_discovery_limit: int = 200
     max_markets_per_scan: int = 80
-    gas_estimate: Decimal = Decimal(0)  # per-set round-trip gas estimate (USDC)
+    # per-execution round-trip gas estimate (USDC), applied once per opportunity
+    gas_estimate: Decimal = Decimal(0)
 
     # --- notifier (off unless configured) ---
     notifier: str = "none"  # none | webhook | ntfy | discord | telegram

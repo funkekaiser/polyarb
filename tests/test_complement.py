@@ -12,14 +12,14 @@ ZERO = Decimal(0)
 
 
 def test_under_profit_formula() -> None:
-    p = under_profit(Decimal("0.40"), Decimal("0.50"), ZERO, ZERO)
+    p = under_profit(Decimal("0.40"), Decimal("0.50"), ZERO)
     assert p.cost == Decimal("0.90")
     assert p.gross_profit == Decimal("0.10")
     assert p.net_profit == Decimal("0.10")
 
 
 def test_over_profit_formula() -> None:
-    p = over_profit(Decimal("0.60"), Decimal("0.55"), ZERO, ZERO)
+    p = over_profit(Decimal("0.60"), Decimal("0.55"), ZERO)
     assert p.cost == Decimal(1)
     assert p.gross_profit == Decimal("0.15")
 

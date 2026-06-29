@@ -3,10 +3,11 @@
 Realizes instantly via the split/merge mechanism (no resolution wait):
 
 - **Under** (``a_yes + a_no < 1``): buy 1 YES + 1 NO, **merge** the pair → receive 1.
-  ``net_profit = 1 - (a_yes + a_no) - f - g``
+  ``net_profit (per set) = 1 - (a_yes + a_no) - f``
 - **Over** (``b_yes + b_no > 1``): **split** 1 collateral → 1 YES + 1 NO, sell both legs.
-  ``net_profit = (b_yes + b_no) - 1 - f - g``
+  ``net_profit (per set) = (b_yes + b_no) - 1 - f``
 
+Gas (one tx per execution) is applied at the execution level in ``make_opportunity``, not here.
 ``a_*`` are best asks (what you pay to buy), ``b_*`` are best bids (what you receive to sell).
 """
 
@@ -22,20 +23,20 @@ from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import depth_at_or_better, executable_size
 
 
-def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal, gas: Decimal) -> Profit:
+def under_profit(a_yes: Decimal, a_no: Decimal, fee_rate: Decimal) -> Profit:
     """Buy YES+NO then merge. Cost = a_yes + a_no; redeem the merged set for 1."""
     cost = a_yes + a_no
     gross = ONE - cost
     fees = taker_fee(a_yes, ONE, fee_rate) + taker_fee(a_no, ONE, fee_rate)
-    return Profit(cost=cost, gross_profit=gross, fees=fees, gas=gas)
+    return Profit(cost=cost, gross_profit=gross, fees=fees)
 
 
-def over_profit(b_yes: Decimal, b_no: Decimal, fee_rate: Decimal, gas: Decimal) -> Profit:
+def over_profit(b_yes: Decimal, b_no: Decimal, fee_rate: Decimal) -> Profit:
     """Split 1 collateral into YES+NO and sell both. Proceeds = b_yes + b_no; cost = 1."""
     proceeds = b_yes + b_no
     gross = proceeds - ONE
     fees = taker_fee(b_yes, ONE, fee_rate) + taker_fee(b_no, ONE, fee_rate)
-    return Profit(cost=ONE, gross_profit=gross, fees=fees, gas=gas)
+    return Profit(cost=ONE, gross_profit=gross, fees=fees)
 
 
 class ComplementDetector:
@@ -54,7 +55,7 @@ class ComplementDetector:
             # Under: buy both asks, merge.
             a_yes, a_no = yes_book.best_ask, no_book.best_ask
             if a_yes is not None and a_no is not None:
-                profit = under_profit(a_yes.price, a_no.price, fee_rate, snap.gas)
+                profit = under_profit(a_yes.price, a_no.price, fee_rate)
                 if profit.net_profit > ZERO:
                     size = executable_size(
                         [
@@ -85,12 +86,13 @@ class ComplementDetector:
                         profit=profit,
                         executable_size=size,
                         realizes="instant",
+                        gas=snap.gas,
                     )
 
             # Over: split collateral, sell both bids.
             b_yes, b_no = yes_book.best_bid, no_book.best_bid
             if b_yes is not None and b_no is not None:
-                profit = over_profit(b_yes.price, b_no.price, fee_rate, snap.gas)
+                profit = over_profit(b_yes.price, b_no.price, fee_rate)
                 if profit.net_profit > ZERO:
                     size = executable_size(
                         [
@@ -121,4 +123,5 @@ class ComplementDetector:
                         profit=profit,
                         executable_size=size,
                         realizes="instant",
+                        gas=snap.gas,
                     )

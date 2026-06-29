@@ -52,7 +52,7 @@ def test_taker_fee_never_negative() -> None:
 
 # Bug 3 — a today-resolving (days=0) arb gets a real annualized, not None.
 def _profit() -> Profit:
-    return Profit(cost=Decimal("0.90"), gross_profit=Decimal("0.10"), fees=ZERO, gas=ZERO)
+    return Profit(cost=Decimal("0.90"), gross_profit=Decimal("0.10"), fees=ZERO)
 
 
 def test_days_zero_annualizes_high_not_none() -> None:
@@ -250,3 +250,54 @@ def test_geopolitics_not_classified_elevated() -> None:
     assert classify_market(geo) == ResolutionRisk.STANDARD
     pol = make_market("0xP").model_copy(update={"fee_type": "politics_fees"})
     assert classify_market(pol) == ResolutionRisk.ELEVATED
+
+
+# ── Backlog B2 — gas modeled per-execution, not per-set ──────────────────────────────────
+
+
+def test_b2_gas_per_execution_not_per_set() -> None:
+    """Gas is a fixed per-execution cost; the same per-set edge can be positive or negative
+    depending on trade size.
+
+    At small size the gas overwhelms the per-set net and total_net_profit < 0.
+    At large size the per-set edge accumulates and total_net_profit > 0.
+    The net_profit_bps sign mirrors total_net_profit.
+    """
+    profit = Profit(cost=Decimal("0.98"), gross_profit=Decimal("0.02"), fees=ZERO)
+    assert profit.net_profit == Decimal("0.02")  # per set, before gas
+
+    gas = Decimal("5")  # $5 per execution (fixed)
+
+    # Small size: 1 set -> total_net = 1 * 0.02 - 5 = -4.98  (gas wipes the edge)
+    opp_small = make_opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="b2-small",
+        condition_ids=["0x1"],
+        legs=[],
+        profit=profit,
+        executable_size=ONE,
+        realizes="instant",
+        gas=gas,
+    )
+    assert opp_small.total_net_profit == Decimal("0.02") - Decimal("5")
+    assert opp_small.total_net_profit < ZERO
+    assert opp_small.net_profit_bps < ZERO
+
+    # Large size: 1000 sets -> total_net = 1000 * 0.02 - 5 = 20 - 5 = 15  (edge survives)
+    opp_large = make_opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="b2-large",
+        condition_ids=["0x1"],
+        legs=[],
+        profit=profit,
+        executable_size=Decimal(1000),
+        realizes="instant",
+        gas=gas,
+    )
+    assert opp_large.total_net_profit == Decimal("15")
+    assert opp_large.total_net_profit > ZERO
+    assert opp_large.net_profit_bps > ZERO
+
+    # Per-set net_profit is unchanged regardless of size or gas
+    assert opp_small.net_profit == Decimal("0.02")
+    assert opp_large.net_profit == Decimal("0.02")

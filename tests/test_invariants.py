@@ -25,45 +25,42 @@ price = st.decimals(min_value=0, max_value=1, places=4, allow_nan=False, allow_i
 rate = st.decimals(
     min_value=0, max_value=Decimal("0.1"), places=4, allow_nan=False, allow_infinity=False
 )
-gas = st.decimals(
-    min_value=0, max_value=Decimal("0.05"), places=4, allow_nan=False, allow_infinity=False
-)
 
 
-@given(a_yes=price, a_no=price, r=rate, g=gas)
+@given(a_yes=price, a_no=price, r=rate)
 def test_complement_under_identity_and_no_false_positive(
-    a_yes: Decimal, a_no: Decimal, r: Decimal, g: Decimal
+    a_yes: Decimal, a_no: Decimal, r: Decimal
 ) -> None:
-    p = under_profit(a_yes, a_no, r, g)
+    p = under_profit(a_yes, a_no, r)
     assert p.gross_profit == ONE - (a_yes + a_no)  # exact formula
-    assert p.net_profit <= p.gross_profit  # fees + gas never increase profit
+    assert p.net_profit <= p.gross_profit  # fees never increase profit
     if p.net_profit > ZERO:
         assert a_yes + a_no < ONE  # profit ⇒ identity violated
 
 
-@given(b_yes=price, b_no=price, r=rate, g=gas)
+@given(b_yes=price, b_no=price, r=rate)
 def test_complement_over_identity_and_no_false_positive(
-    b_yes: Decimal, b_no: Decimal, r: Decimal, g: Decimal
+    b_yes: Decimal, b_no: Decimal, r: Decimal
 ) -> None:
-    p = over_profit(b_yes, b_no, r, g)
+    p = over_profit(b_yes, b_no, r)
     assert p.gross_profit == (b_yes + b_no) - ONE
     if p.net_profit > ZERO:
         assert b_yes + b_no > ONE
 
 
-@given(asks=st.lists(price, min_size=3, max_size=6), g=gas)
-def test_basket_identity_and_no_false_positive(asks: list[Decimal], g: Decimal) -> None:
-    p = basket_profit(asks, [ZERO] * len(asks), g)
+@given(asks=st.lists(price, min_size=3, max_size=6))
+def test_basket_identity_and_no_false_positive(asks: list[Decimal]) -> None:
+    p = basket_profit(asks, [ZERO] * len(asks))
     assert p.gross_profit == ONE - sum(asks, ZERO)
     if p.net_profit > ZERO:
         assert sum(asks, ZERO) < ONE
 
 
-@given(a_yes_b=price, a_no_a=price, rb=rate, ra=rate, g=gas)
+@given(a_yes_b=price, a_no_a=price, rb=rate, ra=rate)
 def test_dependency_identity_and_no_false_positive(
-    a_yes_b: Decimal, a_no_a: Decimal, rb: Decimal, ra: Decimal, g: Decimal
+    a_yes_b: Decimal, a_no_a: Decimal, rb: Decimal, ra: Decimal
 ) -> None:
-    p = dependency_profit(a_yes_b, a_no_a, rb, ra, g)
+    p = dependency_profit(a_yes_b, a_no_a, rb, ra)
     assert p.gross_profit == ONE - (a_yes_b + a_no_a)
     if p.net_profit > ZERO:
         assert a_yes_b + a_no_a < ONE

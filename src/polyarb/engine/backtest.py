@@ -28,7 +28,7 @@ class BacktestSummary:
     net_bps_median: Decimal
     net_bps_max: Decimal
     net_bps_mean: Decimal
-    total_would_be_pnl: Decimal  # Σ net_profit * executable_size
+    total_would_be_pnl: Decimal  # Σ total_net_profit (gas-adjusted)
     total_executable_notional: Decimal  # Σ cost * executable_size
     avg_days_to_resolution: float | None  # mean over opps with days_to_resolution; None if none
 
@@ -88,7 +88,7 @@ def summarize(opps: list[Opportunity]) -> BacktestSummary:
         bps_values.append(opp.net_profit_bps)
 
         # P&L and notional
-        total_pnl += opp.net_profit * opp.executable_size
+        total_pnl += opp.total_net_profit
         total_notional += opp.cost * opp.executable_size
 
         # Days-to-resolution (only opps that have it)

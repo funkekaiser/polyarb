@@ -21,7 +21,7 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 | # | Str | Sev | Issue | Fix direction | Status |
 |---|-----|-----|-------|---------------|--------|
 | B1 | B,C,D | HIGH | **Sizing never walks past top-of-book** — each detector passes the *best* price as the depth limit, so `executable_size` = thinnest leg's *top level only*. Systematically under-sizes and drops real basket arbs. (`TESTING.md §5`'s "upper bound" note is backwards — it's a conservative lower bound.) | Walk legs jointly; accumulate size while combined VWAP still clears `MIN_PROFIT_BPS`; recompute net/bps from VWAP. | open |
-| B2 | ✶ | HIGH | **Gas is a no-op and mis-modeled.** `gas_estimate=0` by default → "net of gas" does nothing. And gas is folded **per-set** then gated per-set, so a real `1000·$0.02 − $5` arb is rejected. | Nonzero default; gate/rank on total economics `size·(gross−fees) − gas`, not per-set. | open |
+| B2 | ✶ | HIGH | **Gas is a no-op and mis-modeled.** `gas_estimate=0` by default → "net of gas" does nothing. And gas is folded **per-set** then gated per-set, so a real `1000·$0.02 − $5` arb is rejected. | Nonzero default; gate/rank on total economics `size·(gross−fees) − gas`, not per-set. | **done (2026-06-29)** — gas modeled per-execution; gate/rank on total $ via `total_net_profit` + gas-adjusted bps |
 | B3 | B | MED | **Overpriced-basket dual undetected** — `Σ NO < N−1` (buy every NO) is a structural edge we miss entirely. | Add the dual + property test (same exhaustiveness precondition as A1). | open |
 
 ## Tier C — The ranking / risk layer is largely cosmetic
@@ -41,7 +41,7 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 | D1 | D | MED | Hand-declared relations **bypass the §6 fingerprint gate** (docs claim `filters.py` enforces it; it doesn't). Wrong-direction/different-index relation → full-loss "lock". | Enforce fingerprint match in `add_relation` or `filters.py`; fix the doc drift. | open |
 | D2 | B,C | MED* | Detectors **trust `clob_token_ids[0] == YES`**; a reversed-outcome market silently corrupts the identity. (*low confidence — convention usually holds.) | Validate `outcomes[0]` against an expected YES label / carry an explicit `yes_index`. | open |
 | D3 | B, D | MED | **Multi-leg horizon should be `max(legs)`**, not first/either (bug-9 fixed the falsy-0; this is the deeper semantics). | Use `max(days)` across legs for held arbs. | open |
-| D4 | C | MED | **Instant complement arbs are resolution-risk-gated/ranked** though they never reach resolution — can discard risk-free money. | Short-circuit `resolution_risk` to OBJECTIVE/n-a for `realizes=="instant"`; exempt from the AT_RISK drop. | open |
+| D4 | C | MED | **Instant complement arbs are resolution-risk-gated/ranked** though they never reach resolution — can discard risk-free money. | Short-circuit `resolution_risk` to OBJECTIVE/n-a for `realizes=="instant"`; exempt from the AT_RISK drop. | **done** (2026-06-29) — `resolution_risk_for()` tags instant arbs OBJECTIVE |
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded void exposure (`1−Π(1−pᵢ)`); per-leg `min_order_size`/tick not enforced; no adverse-selection haircut; no deterministic final tiebreak. | Address alongside C2 (risk) / B1 (sizing). | open |
 
 ## Focus

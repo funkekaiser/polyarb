@@ -30,7 +30,7 @@ def _three_outcome_snapshot(
 
 
 def test_basket_profit_formula() -> None:
-    p = basket_profit([Decimal("0.30"), Decimal("0.30"), Decimal("0.30")], [ZERO, ZERO, ZERO], ZERO)
+    p = basket_profit([Decimal("0.30"), Decimal("0.30"), Decimal("0.30")], [ZERO, ZERO, ZERO])
     assert p.cost == Decimal("0.90")
     assert p.gross_profit == Decimal("0.10")
     assert p.net_profit == Decimal("0.10")

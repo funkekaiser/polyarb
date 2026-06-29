@@ -5,7 +5,9 @@ relations and cost params) and yields :class:`~polyarb.models.Opportunity` objec
 profit *math* is kept in pure functions (in each detector module) that return a
 :class:`Profit`; property tests target those directly. Detectors emit an opportunity only
 when ``net_profit > 0`` — a structurally-violated identity that is still profitable after
-fees and gas. Threshold/size/resolution filtering layers on top in the engine (Phase 3).
+fees (per set, before gas). Gas is a fixed per-execution cost applied in
+:func:`make_opportunity`. Threshold/size/resolution filtering layers on top in the engine
+(Phase 3).
 """
 
 from __future__ import annotations
@@ -25,22 +27,15 @@ BPS = Decimal(10_000)
 
 @dataclass(frozen=True)
 class Profit:
-    """Per-set profit breakdown. ``net_profit = gross_profit - fees - gas``."""
+    """Per-set profit breakdown, before gas. ``net_profit = gross_profit - fees``."""
 
     cost: Decimal
     gross_profit: Decimal
     fees: Decimal
-    gas: Decimal
 
     @property
     def net_profit(self) -> Decimal:
-        return self.gross_profit - self.fees - self.gas
-
-    @property
-    def net_profit_bps(self) -> Decimal:
-        if self.cost <= ZERO:
-            return ZERO
-        return self.net_profit / self.cost * BPS
+        return self.gross_profit - self.fees
 
 
 @dataclass
@@ -51,7 +46,7 @@ class Snapshot:
     event: Event | None = None
     markets: list[Market] = field(default_factory=list)
     relations: list[Relation] = field(default_factory=list)
-    gas: Decimal = ZERO  # per-set round-trip gas estimate
+    gas: Decimal = ZERO  # per-execution (fixed) round-trip gas estimate in USDC
     days_to_resolution: dict[str, int] = field(default_factory=dict)  # condition_id -> days
 
 
@@ -73,14 +68,25 @@ def make_opportunity(
     realizes: Literal["instant", "resolution"],
     event_id: str | None = None,
     days_to_resolution: int | None = None,
+    gas: Decimal = ZERO,
 ) -> Opportunity:
-    """Assemble an Opportunity, computing bps and (for resolution arbs) annualized return."""
+    """Assemble an Opportunity, computing gas-adjusted bps and annualized return.
+
+    ``gas`` is a fixed per-execution cost (one tx regardless of set count). All per-set
+    fields (cost, gross_profit, fees, net_profit) remain clean per-set; the gas cost and the
+    resulting gas-adjusted totals are computed here at the execution level.
+    """
+    net_set = profit.net_profit  # per set, before gas
+    total_cost = executable_size * profit.cost
+    total_net = executable_size * net_set - gas
+    net_profit_bps = (total_net / total_cost * BPS) if total_cost > ZERO else ZERO
+
     annualized: Decimal | None = None
-    if realizes == "resolution" and days_to_resolution is not None and profit.cost > ZERO:
+    if realizes == "resolution" and days_to_resolution is not None and total_cost > ZERO:
         # days_to_resolution == 0 means "resolves today" — floor at 1 day so it annualizes to
         # a high (not None) value and ranks near the top, and to avoid a divide-by-zero.
         days = Decimal(max(days_to_resolution, 1))
-        annualized = (profit.net_profit / profit.cost) * (Decimal(365) / days)
+        annualized = (total_net / total_cost) * (Decimal(365) / days)
     return Opportunity(
         detector=detector,
         description=description,
@@ -90,9 +96,9 @@ def make_opportunity(
         cost=profit.cost,
         gross_profit=profit.gross_profit,
         fees=profit.fees,
-        gas=profit.gas,
-        net_profit=profit.net_profit,
-        net_profit_bps=profit.net_profit_bps,
+        gas=gas,
+        net_profit=net_set,
+        net_profit_bps=net_profit_bps,
         executable_size=executable_size,
         realizes=realizes,
         days_to_resolution=days_to_resolution,

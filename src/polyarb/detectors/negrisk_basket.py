@@ -4,8 +4,9 @@ For an event with mutually-exclusive, exhaustive outcomes ``o_1..o_N`` (exactly 
 YES), if ``Σ_i a_yes,i < 1`` you can buy 1 YES of every outcome through the **standard order
 books**: exactly one pays 1 at resolution.
 
-    net_profit = 1 - Σ_i a_yes,i - f - g      (paid at resolution)
-    annualized = (net_profit / cost) * (365 / days_to_resolution)
+    net_profit (per set) = 1 - Σ_i a_yes,i - f
+    total_net_profit     = size * net_profit - gas   (gas applied once at execution level)
+    annualized           = (total_net / total_cost) * (365 / days_to_resolution)
 
 ⚠️ The NegRisk **convert** function is NOT the tool for this. Convert is a capital-efficiency
 mechanism: you pay 1 unit and receive 1 unit of exposure — **zero profit** (see
@@ -25,12 +26,12 @@ from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import depth_at_or_better, executable_size
 
 
-def basket_profit(asks: list[Decimal], fee_rates: list[Decimal], gas: Decimal) -> Profit:
+def basket_profit(asks: list[Decimal], fee_rates: list[Decimal]) -> Profit:
     """Profit from buying 1 YES of every outcome at ``asks``. Cost = Σ asks; payoff = 1."""
     cost = sum(asks, ZERO)
     gross = ONE - cost
     fees = sum((taker_fee(p, ONE, r) for p, r in zip(asks, fee_rates, strict=True)), ZERO)
-    return Profit(cost=cost, gross_profit=gross, fees=fees, gas=gas)
+    return Profit(cost=cost, gross_profit=gross, fees=fees)
 
 
 def negrisk_convert_pnl(prices: list[Decimal]) -> Decimal:
@@ -78,7 +79,7 @@ class NegRiskBasketDetector:
                 )
             )
 
-        profit = basket_profit(asks, fee_rates, snap.gas)
+        profit = basket_profit(asks, fee_rates)
         if profit.net_profit <= ZERO:
             return
 
@@ -100,4 +101,5 @@ class NegRiskBasketDetector:
             realizes="resolution",
             event_id=event.id,
             days_to_resolution=days,
+            gas=snap.gas,
         )
