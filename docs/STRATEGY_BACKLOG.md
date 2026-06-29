@@ -29,6 +29,21 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 ---
 
+## ON JONATHAN'S DESK — decisions (blocking nothing today)
+
+Each is implemented as far as it can go without a judgment call; defaults are safe/conservative.
+
+| # | Decision | Default in place | What you'd decide |
+|---|----------|------------------|-------------------|
+| **D1** | Fingerprint gate for *hand-declared* relations. No safe default for the absent-fingerprint case. | Inert — `SEED_RELATIONS`/`TAG_REGISTRY` are empty (dependency detector off by default); auto-generated relations already gate. | Pick a policy before seeding real relations: (a) require `fingerprint_a/b` args in `add_relation` (hard gate, loses the one-liner); (b) optional args (honor-system); (c) treat the manual declaration as the human attestation + document. |
+| **C1-atom-use** | Should ranking (the $-axis) and the `MIN_NOTIONAL` filter use the optimistic `executable_size` or the new conservative `conservative_size` (or a haircut blend)? | Optimistic `executable_size` (SPEC's cumulative-depth definition); `conservative_size` surfaced as a diagnostic. | Risk appetite: keep optimistic for *detection*, or switch the floor/rank to conservative (fewer, more-robust opps). Matters most once execution is live. |
+| **B2′-num** | Real per-execution gas constants. | Mechanism shipped at `gas_estimate=0`, `gas_per_leg_estimate=0` (gas off — behavior-preserving). | Measure Polygon/USDC merge-redeem + per-taker-fill cost and set the two config knobs. Ops task. |
+| **A2-void** | Pre-resolution void/50-50 for *live* legs — not reliably detectable from available data. | Documented residual; partly gated by the C1 active-dispute → AT_RISK signal; closed-leg voids handled by `live_partition`. | Accept the residual, or invest in a curated void-prone source/category denylist (needs a live-API survey). |
+
+Already decided (no action): **C2** probabilistic ranking — *deferred* (needs a probability we can't measure). **§5** partial basket — *opt-in, off by default*.
+
+---
+
 ## Open — Tier A: is the "guaranteed" money really safe?
 
 | # | Str | Sev | Issue | Fix direction |
