@@ -10,6 +10,7 @@ from polyarb.detectors.negrisk_basket import (
     basket_profit,
     negrisk_convert_pnl,
 )
+from polyarb.models import Event, Market
 from polyarb.pricing.fees import taker_fee
 from tests.helpers import make_book, make_event, make_market
 
@@ -210,3 +211,337 @@ def test_per_leg_fee_rates_applied_independently() -> None:
     )
     assert opp.fees == expected_fees
     assert opp.fees != scrambled_fees
+
+
+# ---------------------------------------------------------------------------
+# A1 HARDENING — Exhaustiveness enforcement (augmented / closed / holes)
+# ---------------------------------------------------------------------------
+
+
+def test_augmented_event_skips_basket() -> None:
+    """A1(A): augmented negRisk event emits nothing even when Σ YES is clearly < 1.
+
+    An augmented event's partition is not safely exhaustive — outcomes can be added after the
+    basket is locked and the 'Other' leg's meaning shifts, so Σ<1 may reflect a correct price,
+    not an arb.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(3)
+    ]
+    event = Event(
+        id="9",
+        title="Augmented evt",
+        neg_risk=True,
+        enable_neg_risk=True,
+        neg_risk_augmented=True,
+        markets=markets,
+    )
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(3)}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_closed_constituent_dropped_live_remainder_emits() -> None:
+    """A1(B): a resolved-NO (closed) market is dropped; the 3 live legs still emit.
+
+    A 4-outcome negRisk event where outcome 0 was eliminated (resolved NO, market closed).
+    The remaining 3 live outcomes are still an exhaustive set — exactly one of them wins —
+    so the detector SHOULD emit a basket over just those 3 legs.  The closed market's
+    condition_id and token_id must NOT appear among the emitted legs.
+    """
+    closed_market = Market(
+        id="10",
+        condition_id="0xClosed",
+        question="Eliminated outcome?",
+        outcomes=["Yes", "No"],
+        outcome_prices=["0", "1"],  # resolved NO (YES=0) → safe to drop from the partition
+        clob_token_ids=["yClosed", "nClosed"],
+        neg_risk=True,
+        closed=True,
+    )
+    live_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="4-outcome event with one eliminated",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[closed_market, *live_markets],
+    )
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+
+    opps = list(NegRiskBasketDetector().detect(snap))
+    assert len(opps) == 1
+    opp = opps[0]
+    # Exactly the 3 live legs, not the closed one.
+    assert len(opp.legs) == 3
+    assert "0xClosed" not in opp.condition_ids
+    assert "yClosed" not in {leg.token_id for leg in opp.legs}
+    for i in range(1, 4):
+        assert f"0x{i}" in opp.condition_ids
+
+
+def test_closed_winner_not_dropped_skips_event() -> None:
+    """A1(C1-bug): a closed leg that WON (YES≈1) must NOT be dropped — skip the whole event.
+
+    The winner closes first; its losing peers' books go stale-cheap. If we blindly dropped the
+    closed leg we'd build a basket over guaranteed losers (Σ tiny → huge fake edge, top rank)
+    that pays $0. The resolved YES price (~1) proves it won, so the event must be skipped.
+    """
+    winner = Market(
+        id="10",
+        condition_id="0xWinner",
+        question="Did the winner win?",
+        outcomes=["Yes", "No"],
+        outcome_prices=["1", "0"],  # resolved YES — this outcome WON, event is decided
+        clob_token_ids=["yWin", "nWin"],
+        neg_risk=True,
+        closed=True,
+    )
+    # Losers still live with stale-cheap asks (Σ = 0.15 ⇒ a tempting but fake "85% edge").
+    losers = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="Decided event (winner closed, losers stale)",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[winner, *losers],
+    )
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.05", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_closed_unknown_resolution_skips_event() -> None:
+    """A1(C1-bug): a closed leg with no resolved price can't be proven a loss → skip the event.
+
+    Without `outcome_prices` we can't tell a resolved-NO (drop-safe) leg from the winner, so the
+    conservative choice is to skip rather than risk dropping the winner.
+    """
+    closed_unknown = Market(
+        id="10",
+        condition_id="0xUnknown",
+        question="Closed, resolution unknown?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["yUnk", "nUnk"],  # no outcome_prices
+        neg_risk=True,
+        closed=True,
+    )
+    live = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="Closed leg, unknown resolution",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[closed_unknown, *live],
+    )
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_live_leg_not_accepting_orders_skips_event() -> None:
+    """A1(C1): accepting_orders=False on a live outcome is a partition hole → event skipped.
+
+    A live market that isn't accepting orders can't be traded, so the basket can't be locked.
+    The detector must skip the WHOLE event — not just that leg — because an uncovered outcome
+    means a win there pays the basket $0.
+    """
+    hole = Market(
+        id="1",
+        condition_id="0xHole",
+        question="Not accepting?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["yHole", "nHole"],
+        neg_risk=True,
+        accepting_orders=False,
+    )
+    good_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(2)
+    ]
+    event = Event(
+        id="9",
+        title="Hole event — not accepting orders",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[hole, *good_markets],
+    )
+    # Good legs are profitable (Σ of the good two = 0.60 < 1), but the hole prevents emission.
+    # The hole's book is PRESENT so the accepting_orders guard (not the missing-book guard) is
+    # the discriminating barrier — remove that guard and this would emit a 3-leg basket.
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(2)}
+    books["yHole"] = make_book("yHole", asks=[("0.30", "100")])
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_live_leg_inactive_skips_event() -> None:
+    """A1(C2): active=False on a live outcome is a partition hole → event skipped.
+
+    An inactive market is not tradeable; the basket cannot be locked exhaustively.
+    """
+    hole = Market(
+        id="1",
+        condition_id="0xHole",
+        question="Inactive?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["yHole", "nHole"],
+        neg_risk=True,
+        active=False,
+    )
+    good_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(2)
+    ]
+    event = Event(
+        id="9",
+        title="Hole event — inactive market",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[hole, *good_markets],
+    )
+    # Book present so the `active` guard is the discriminating barrier (not the missing book).
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(2)}
+    books["yHole"] = make_book("yHole", asks=[("0.30", "100")])
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_live_leg_missing_book_skips_event_exhaustiveness() -> None:
+    """A1(C3): YES book absent for a live leg → partition hole → WHOLE event skipped.
+
+    4-outcome event; y0..y2 each have profitable books (Σ=0.60 < 1 for the 3 of them).
+    y3's book is entirely absent from snap.books. Even though the other 3 legs look good,
+    a win by y3 would pay the basket $0, so the detector must emit nothing.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(4)
+    ]
+    event = Event(
+        id="9",
+        title="4-outcome, 1 book missing",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=markets,
+    )
+    # y3 intentionally omitted — live outcome with no book is a hole.
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.20", "100")]) for i in range(3)}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_live_leg_crossed_book_skips_event_exhaustiveness() -> None:
+    """A1(C4): crossed YES book on any live leg → partition hole → WHOLE event skipped.
+
+    4-outcome event; y0..y2 are normally priced (Σ=0.60 < 1 among the three).
+    y3's book is crossed (best_bid=0.70 >= best_ask=0.30): stale/erroneous data means we
+    can't safely lock that leg, so the whole event must be skipped.
+    """
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(4)
+    ]
+    event = Event(
+        id="9",
+        title="4-outcome, 1 crossed book",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=markets,
+    )
+    books = {
+        "y0": make_book("y0", asks=[("0.20", "100")]),
+        "y1": make_book("y1", asks=[("0.20", "100")]),
+        "y2": make_book("y2", asks=[("0.20", "100")]),
+        # y3 is crossed: best bid (0.70) >= best ask (0.30) — invalid/stale.
+        "y3": make_book("y3", bids=[("0.70", "100")], asks=[("0.30", "100")]),
+    }
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_single_live_leg_after_eliminations_emits_nothing() -> None:
+    """A1(D): only 1 live leg remains after 2 outcomes are eliminated → no basket.
+
+    A single surviving outcome is a near-certain winner; emitting a 'basket' of 1 leg
+    would be a directional bet masquerading as a structural arb.
+    """
+    closed_markets = [
+        Market(
+            id=str(i),
+            condition_id=f"0xC{i}",
+            question=f"Closed{i}?",
+            outcomes=["Yes", "No"],
+            outcome_prices=["0", "1"],  # resolved NO → dropped, leaving exactly 1 live leg
+            clob_token_ids=[f"yC{i}", f"nC{i}"],
+            neg_risk=True,
+            closed=True,
+        )
+        for i in range(2)
+    ]
+    live_market = make_market("0xL", yes="yL", no="nL", neg_risk=True, group_item_title="Last")
+    event = Event(
+        id="9",
+        title="Almost-decided event",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[*closed_markets, live_market],
+    )
+    books = {"yL": make_book("yL", asks=[("0.30", "100")])}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_neg_risk_other_leg_included_in_basket() -> None:
+    """A1(E): the 'Other/none-of-the-above' catch-all leg participates fully in the basket.
+
+    The negRiskOther market is a real, tradeable partition member — if the 'Other' outcome
+    wins and we didn't buy its YES, the basket pays $0.  The detector must include it as a
+    leg, and its condition_id must appear in opp.condition_ids.
+    """
+    other_market = Market(
+        id="99",
+        condition_id="0xOther",
+        question="None of the above?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["yOther", "nOther"],
+        neg_risk=True,
+        neg_risk_other=True,
+        group_item_title="Other",
+    )
+    regular_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(2)
+    ]
+    event = Event(
+        id="9",
+        title="Event with Other catch-all leg",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[*regular_markets, other_market],
+    )
+    books = {
+        "y0": make_book("y0", asks=[("0.30", "100")]),
+        "y1": make_book("y1", asks=[("0.30", "100")]),
+        "yOther": make_book("yOther", asks=[("0.30", "100")]),
+    }
+    snap = Snapshot(event=event, books=books)
+
+    opps = list(NegRiskBasketDetector().detect(snap))
+    assert len(opps) == 1
+    opp = opps[0]
+    # The Other leg is a full basket participant.
+    assert len(opp.legs) == 3
+    assert "0xOther" in opp.condition_ids
+    assert "yOther" in {leg.token_id for leg in opp.legs}

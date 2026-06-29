@@ -25,6 +25,12 @@ from polyarb.models import BookLevel, DetectorKind, Leg, Opportunity, OrderBook
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import is_crossed, walk_buy_legs
 
+# A closed constituent's resolved YES price tells us how it resolved: ~0 means it LOST
+# (eliminated — safe to drop from the partition). Anything else — ~1 (it WON, so the event is
+# decided and the live set excludes the winner), ~0.5 (void), or unknown/missing — means
+# dropping it is unsafe, so we skip the whole event rather than build a basket of losers.
+_RESOLVED_NO_MAX = Decimal("0.02")
+
 
 def basket_profit(asks: list[Decimal], fee_rates: list[Decimal]) -> Profit:
     """Profit from buying 1 YES of every outcome at ``asks``. Cost = Σ asks; payoff = 1."""
@@ -51,6 +57,17 @@ class NegRiskBasketDetector:
         event = snap.event
         if event is None or not event.is_multi_outcome:
             return
+        # A1 — exhaustiveness. The "exactly one pays 1" guarantee holds only if the legs we buy
+        # form a complete, mutually-exclusive, exhaustive partition. A *fixed* (non-augmented)
+        # negRisk event is exhaustive by construction; an **augmented** one is not safely so —
+        # outcomes can be added after a basket is locked and the "Other" leg's meaning shifts,
+        # so Σ<1 there may be a correctly-priced incomplete basket, not an arb. Skip augmented.
+        if event.neg_risk_augmented:
+            return
+        # Defense-in-depth (the scanner already pre-filters to open events): never build a basket
+        # on a decided or inactive event — its "live" set need not contain the winner.
+        if event.closed or not event.active:
+            return
 
         token_ids: list[str] = []
         outcomes: list[str] = []
@@ -59,20 +76,38 @@ class NegRiskBasketDetector:
         condition_ids: list[str] = []
 
         for market in event.markets:
-            if not market.is_binary:
-                return  # not a clean YES/NO basket; skip the whole event
+            # A 'closed' constituent has resolved — but NOT necessarily to NO, and the winner
+            # closes first. Drop it from the partition only if its resolved YES price proves it
+            # LOST (~0); the remaining live outcomes then still form a complete exhaustive set.
+            # If it won (~1) the event is decided, if it voided (~0.5) the floor is broken, and
+            # if its price is unknown we can't prove a safe drop — in every such case skip the
+            # whole event rather than emit a basket whose true winner we've discarded ($0 payoff).
+            if market.closed:
+                yes_price = market.outcome_prices[0] if market.outcome_prices else None
+                if yes_price is not None and yes_price <= _RESOLVED_NO_MAX:
+                    continue  # resolved NO → eliminated outcome, drops out of the partition
+                return
+            # Any *live* constituent that isn't cleanly tradeable is a hole in the partition: we
+            # can't prove exhaustiveness, so we must not emit a "guaranteed $1" basket. Skip the
+            # whole event rather than buy a subset that pays $0 if the missing outcome wins.
+            if not (market.is_binary and market.active and market.accepting_orders):
+                return
             book: OrderBook | None = snap.books.get(market.yes_token_id)
-            if book is None or book.best_ask is None:
-                return  # cannot lock the basket without every leg's YES ask
-            if is_crossed(book):
-                return  # stale/erroneous data; skip the whole event
+            if book is None or book.best_ask is None or is_crossed(book):
+                return  # missing/stale book on a live outcome → partition incomplete; skip
             token_ids.append(market.yes_token_id)
             outcomes.append(market.group_item_title or market.outcomes[0])
             ask_levels.append(book.asks)
             fee_rates.append(fee_rate_for(market))
             condition_ids.append(market.condition_id)
 
-        # Depth-walk across every outcome's YES asks: buy one share of each per set; exactly
+        # Need at least two live outcomes for a basket (after eliminations). A single survivor
+        # is a near-certain winner, not a structural basket — leave it to avoid resolution-lag
+        # directional bets masquerading as arbs.
+        if len(token_ids) < 2:
+            return
+
+        # Depth-walk across every live outcome's YES asks: buy one share of each per set; exactly
         # one outcome pays 1 at resolution, so a completed set is worth payoff=1.
         size, leg_costs, fees = walk_buy_legs(ask_levels, fee_rates, payoff=ONE)
         if size <= ZERO:

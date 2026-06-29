@@ -50,6 +50,13 @@ class Market(BaseModel):
     clob_token_ids: list[str] = Field(default_factory=list, alias="clobTokenIds")
     neg_risk: bool = Field(default=False, alias="negRisk")
     neg_risk_market_id: str | None = Field(default=None, alias="negRiskMarketID")
+    # Marks the "Other / none-of-the-above" catch-all leg of a negRisk group. Informational
+    # only — surfaced for labeling/diagnostics and future use (e.g. the NO-dual). The basket's
+    # exhaustiveness guarantee rests on the event being non-augmented (exhaustive by
+    # construction), not on this flag; a present Other market is included as an ordinary leg and
+    # a missing Other can't be distinguished from a genuinely exhaustive set. Was being dropped
+    # silently before (extra="ignore").
+    neg_risk_other: bool = Field(default=False, alias="negRiskOther")
     group_item_title: str | None = Field(default=None, alias="groupItemTitle")
     fees_enabled: bool = Field(default=False, alias="feesEnabled")
     fee_type: str | None = Field(default=None, alias="feeType")

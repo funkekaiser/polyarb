@@ -12,7 +12,7 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 
 | # | Str | Sev | Issue | Fix direction | Status |
 |---|-----|-----|-------|---------------|--------|
-| A1 | B | HIGH | Basket never verifies **collective exhaustiveness** — only `neg_risk && len≥3` (mutual exclusivity). `negRiskAugmented` events are non-exhaustive by construction (the flag is ignored). If no listed outcome wins → basket pays **$0**. | Exclude augmented events; require a declared "exhaustive partition" tag (declared, not inferred). | open |
+| A1 | B | HIGH | Basket never verifies **collective exhaustiveness** — only `neg_risk && len≥3` (mutual exclusivity). `negRiskAugmented` events are non-exhaustive by construction (the flag is ignored). If no listed outcome wins → basket pays **$0**. | Exclude augmented events; require a declared "exhaustive partition" tag (declared, not inferred). | **done (2026-06-29)** — skip augmented events; build the basket over **live** constituents only, dropping a `closed` leg **only when its resolved YES price proves it lost (~0)** (a closed *winner* ~1 / void ~0.5 / unknown → skip the whole event); skip if any live leg is a hole (not tradeable / no book / crossed); require ≥2 live legs. Also fixed a live scanner bug (events with eliminated outcomes never emitted). 3-seat Opus committee caught the closed-**winner** misclassification (would emit a top-ranked $0 basket) **before commit**. |
 | A2 | B, D | HIGH | **Void / 50-50 resolution** breaks the floor. Legs are *different* markets that can void independently; an asymmetric void (the winning leg → $0.50, losers → $0) pays $0.50 on a $0.90 cost. Complement is immune (same-market two sides → 0.5+0.5=1). | State the {0,1}-resolution assumption; per-market void-prone flag and/or a payoff haircut for held arbs. | open |
 | A3 | B, D | HIGH | **No staleness / cross-leg time-skew gate.** Books are independent REST reads at different times (basket's missing legs fetched in a *second* round); `timestamp_ms` never checked. A many-leg "Σ<1" can be a pure time-skew artifact. | Reject opps whose legs' timestamps skew beyond a budget; prefer the WS feed for synchronous books. | open |
 
@@ -92,10 +92,29 @@ Addressed in this pass (test/robustness, committed): discriminating per-leg-fee 
 tests (walk + both detectors), exact-gas-boundary test, `walk_buy_legs([])` returns zero,
 and the corrected `TESTING.md §5` size note (optimistic-ceiling caveat).
 
+## A1 exhaustiveness — committee re-check (2026-06-29) + new items
+
+A 3-seat Opus committee (profit-identity math · execution realism · adversarial code review)
+reviewed the A1 implementation and `docs/HEDGING.md` before commit. It caught a **critical
+self-inflicted bug** (the closed-**winner** misclassification, now fixed — see A1 row) and
+confirmed the gate logic (augmented-skip, hole-skip, ≥2, scanner/detector consistency) sound.
+New items it surfaced:
+
+| # | Str | Sev | Issue | Fix direction | Status |
+|---|-----|-----|-------|---------------|--------|
+| A1-stale | B | MED | **Stale-closed cross-check removed.** The scanner now fetches books only for live constituents, so a *stale-closed* leg (Gamma says closed but it's still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices` instead. | When a closed leg's resolution is borderline/unknown, fetch its book anyway; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. Defense-in-depth on A3. | open |
+| A1-riskwt | ✶ | MED | **No risk weight for near-resolution baskets.** A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print events. `live/total` legs and "Σ_live implausibly « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; penalize/await-corroborate near-fully-resolved baskets. Pairs with C2/C3. | open |
+| B3 (refined) | B | MED | NO-dual `Σ NO < M−1`. Committee: needs only **mutual exclusivity**, so it must **not** inherit A1's augmented/closed-YES gates; and it's a *coverage* tool with inverted capital economics (ranks below a feasible YES basket). Full design in `docs/HEDGING.md`. | Implement per HEDGING §2 (reuse A1's tradeability/hole filter, not its exhaustiveness gates). | open |
+
+The hedging design (`docs/HEDGING.md`) was corrected per the committee: §5 partial-basket EV
+must use the **normalized** implied prob `p = Σ_S/T` (earns pro-rata share `Σ_S/T` of the slack
+`1−T`, not the whole slack) and is an *optimistic* bound under adverse selection; §4's
+impossibility result re-justified via LP/no-arb duality; convert is *slightly* negative-EV.
+
 ## Focus (next: NegRisk basket)
 
-B1/B2 are now done across all three detectors. The next strategy to perfect is the **NegRisk
-basket** (SPEC's highest-value strategy, where A1/A2/A3 converge) — make its "guaranteed $1"
-*actually* guaranteed (**exhaustiveness A1 + void/50-50 A2 + staleness A3**) before touching
-dependency. The panel rates A1 (exhaustiveness) the most dangerous open correctness gap: an
-unlisted "other/none" outcome turns a "free" basket into a guaranteed loss.
+A1 (exhaustiveness) is **done**. The remaining basket risks are **void/50-50 (A2)** and
+**staleness/time-skew (A3)** — make "guaranteed $1" robust to independent-leg voids and stale
+cross-leg reads before touching dependency. The model-free **NO-dual (B3)** is the next *new*
+strategy (see `docs/HEDGING.md`); the **probabilistic partial basket (HEDGING §5)** is a
+product-principle DECISION for Jonathan and must not ship by default.

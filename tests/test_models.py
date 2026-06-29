@@ -76,3 +76,18 @@ def test_order_book_best_levels_computed_by_value() -> None:
     assert b.best_ask.price == min(level.price for level in b.asks)
     assert b.best_ask.price > b.best_bid.price
     assert all(isinstance(level.price, Decimal) for level in b.bids)
+
+
+def test_market_neg_risk_other_field_parsed() -> None:
+    """F: negRiskOther alias round-trips; defaults to False when absent.
+
+    The field was previously swallowed by extra='ignore' and is now load-bearing for
+    exhaustiveness checking in the NegRisk basket detector.
+    """
+    with_flag = Market.model_validate(
+        {"id": "1", "conditionId": "0x1", "question": "q", "negRiskOther": True}
+    )
+    assert with_flag.neg_risk_other is True
+
+    without_flag = Market.model_validate({"id": "1", "conditionId": "0x1", "question": "q"})
+    assert without_flag.neg_risk_other is False

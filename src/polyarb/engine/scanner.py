@@ -170,8 +170,16 @@ class Scanner:
         for event in events:
             if not event.is_multi_outcome:
                 continue
+            # Only fetch books for *live* constituents — the basket detector drops eliminated
+            # (closed) outcomes from the partition, so their (often absent) books are noise.
             needed = {
-                m.yes_token_id for m in event.markets if m.is_binary and m.clob_token_ids
+                m.yes_token_id
+                for m in event.markets
+                if m.is_binary
+                and m.clob_token_ids
+                and m.active
+                and not m.closed
+                and m.accepting_orders
             } - books.keys()
             event_books = books | (await self._fetch_books(needed) if needed else {})
             for market in event.markets:
