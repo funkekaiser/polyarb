@@ -13,8 +13,8 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 | # | Str | Sev | Issue | Fix direction | Status |
 |---|-----|-----|-------|---------------|--------|
 | A1 | B | HIGH | Basket never verifies **collective exhaustiveness** — only `neg_risk && len≥3` (mutual exclusivity). `negRiskAugmented` events are non-exhaustive by construction (the flag is ignored). If no listed outcome wins → basket pays **$0**. | Exclude augmented events; require a declared "exhaustive partition" tag (declared, not inferred). | **done (2026-06-29)** — skip augmented events; build the basket over **live** constituents only, dropping a `closed` leg **only when its resolved YES price proves it lost (~0)** (a closed *winner* ~1 / void ~0.5 / unknown → skip the whole event); skip if any live leg is a hole (not tradeable / no book / crossed); require ≥2 live legs. Also fixed a live scanner bug (events with eliminated outcomes never emitted). 3-seat Opus committee caught the closed-**winner** misclassification (would emit a top-ranked $0 basket) **before commit**. |
-| A2 | B, D | HIGH | **Void / 50-50 resolution** breaks the floor. Legs are *different* markets that can void independently; an asymmetric void (the winning leg → $0.50, losers → $0) pays $0.50 on a $0.90 cost. Complement is immune (same-market two sides → 0.5+0.5=1). | State the {0,1}-resolution assumption; per-market void-prone flag and/or a payoff haircut for held arbs. | open |
-| A3 | B, D | HIGH | **No staleness / cross-leg time-skew gate.** Books are independent REST reads at different times (basket's missing legs fetched in a *second* round); `timestamp_ms` never checked. A many-leg "Σ<1" can be a pure time-skew artifact. | Reject opps whose legs' timestamps skew beyond a budget; prefer the WS feed for synchronous books. | open |
+| A2 | B, D | HIGH | **Void / 50-50 resolution** breaks the floor. Legs are *different* markets that can void independently; an asymmetric void (the winning leg → $0.50, losers → $0) pays $0.50 on a $0.90 cost. Complement is immune (same-market two sides → 0.5+0.5=1). | State the {0,1}-resolution assumption; per-market void-prone flag and/or a payoff haircut for held arbs. | **partial (2026-06-29) — core risk still OPEN.** Honest committee finding: void-proneness is *not reliably detectable* from available data. What's done: `live_partition` drops already-voided **closed** legs (post-void, A1); `customLiveness` is now parsed and a *longer-than-default* dispute window → ELEVATED (weak, forward-looking rank-down — NOT a void detector; it's ~0% of current markets and is the dispute-window *length*, not a void probability). The {0,1}-resolution assumption is stated. **Open:** pre-resolution void detection for *live* legs (no signal exists); the real fix is a declared void-prone/category list (needs live data) or a payoff-haircut policy. |
+| A3 | B, D | HIGH | **No staleness / cross-leg time-skew gate.** Books are independent REST reads at different times (basket's missing legs fetched in a *second* round); `timestamp_ms` never checked. A many-leg "Σ<1" can be a pure time-skew artifact. | Reject opps whose legs' timestamps skew beyond a budget; prefer the WS feed for synchronous books. | **done (2026-06-29)** — scanner drops books whose CLOB **last-change** `timestamp_ms` (verified semantics, not response time) is older than `max_book_age_s` (default 900s) before detection; bounds cross-leg skew to ~that window. Honest caveat (committee): this is a **gross-staleness / corrupt-snapshot net** (catches the CLOB's hours-old 0.01/0.99 snapshots that manufacture phantom arbs), NOT a fine freshness filter — a *quiescent-but-valid* book also has an old timestamp, so the threshold trades thin-market coverage for staleness safety. A targeted #180 detector (hash/revert-based) would be the precise fix → see A3-quiescence below. |
 
 ## Tier B — Silently dropping / missing real money
 
@@ -111,10 +111,27 @@ must use the **normalized** implied prob `p = Σ_S/T` (earns pro-rata share `Σ_
 `1−T`, not the whole slack) and is an *optimistic* bound under adverse selection; §4's
 impossibility result re-justified via LP/no-arb duality; convert is *slightly* negative-EV.
 
+## A2 / A3 — committee re-check (2026-06-29) + new items
+
+A 2-seat committee (data/identity with **live-API probes** · adversarial code) reviewed A2/A3.
+It empirically **refuted** the worry that the CLOB `timestamp` is response-time — it's the
+book's last-change time, so A3's age gate genuinely fires — but flagged that A3 can't tell a
+corrupt snapshot from a quiescent valid book (false-negative tradeoff; default raised 60→900s)
+and that A2's `customLiveness>0→AT_RISK` was miscalibrated theater (downgraded to
+`>default→ELEVATED`, core void risk left honestly open). New items:
+
+| # | Str | Sev | Issue | Fix direction | Status |
+|---|-----|-----|-------|---------------|--------|
+| A3-quiescence | B,D | MED | A3's `now − timestamp` net can't distinguish a corrupt stale snapshot (#180) from a quiescent-but-valid book; any threshold trades thin-market coverage for staleness safety. | Targeted #180 detector: flag books whose `hash` reverted to a prior value or that show the 0.01/0.99 corrupt pattern, instead of (or alongside) a blunt age cutoff. | open |
+| A2-void (core) | B,D | HIGH | Pre-resolution void/50-50 detection for **live** legs — no signal in available data (`customLiveness` is dispute-window length, not void prob). | A declared void-prone/category list (needs a live-API survey) or a payoff-haircut policy for held arbs; otherwise accept as a documented residual gated by resolution-risk. | open |
+| §5-partial | B | — | Probabilistic partial-basket mode. **Decision: build it, opt-in, off by default** (Jonathan, 2026-06-29). | Per `docs/HEDGING.md` §5: separate clearly-tagged class, conservative lower-bound EV (`p=Σ_S/T`, residual at NO-ask cost), config flag. Sequenced after the structural work. | approved, not built |
+
 ## Focus (next: NegRisk basket)
 
-A1 (exhaustiveness) is **done**. The remaining basket risks are **void/50-50 (A2)** and
-**staleness/time-skew (A3)** — make "guaranteed $1" robust to independent-leg voids and stale
-cross-leg reads before touching dependency. The model-free **NO-dual (B3)** is the next *new*
-strategy (see `docs/HEDGING.md`); the **probabilistic partial basket (HEDGING §5)** is a
-product-principle DECISION for Jonathan and must not ship by default.
+A1 (exhaustiveness) and A3 (staleness net) are **done**; A2's detectable part is done and its
+core void risk is documented-open. Remaining basket work, in order: the model-free **NO-dual
+(B3)** (the next *new* strategy — reuse `live_partition(skip_augmented=False)`, see
+`docs/HEDGING.md`), then the **opt-in probabilistic partial basket (§5)**, then the deeper
+risk/ranking layer (**C1–C3**: real AT_RISK assignment, probabilistic risk-adjustment,
+winner's-curse guard) which several A-tier residuals (A1-riskwt, A2-void, A3-quiescence) now
+feed into.

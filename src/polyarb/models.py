@@ -69,6 +69,15 @@ class Market(BaseModel):
     active: bool = True
     closed: bool = False
     end_date: datetime | None = Field(default=None, alias="endDate")  # market resolution time
+    # UMA dispute-window length (seconds); 0 = use the protocol default. A *longer-than-default*
+    # value is a weak signal of a more contention-prone resolution (A2 — see
+    # resolution/risk.classify_market). Not a void probability. Was dropped before (extra=ignore).
+    custom_liveness: int = Field(default=0, alias="customLiveness")
+
+    @field_validator("custom_liveness", mode="before")
+    @classmethod
+    def _liveness_default(cls, value: Any) -> Any:
+        return 0 if value in (None, "") else value
 
     @field_validator("outcomes", "outcome_prices", "clob_token_ids", mode="before")
     @classmethod

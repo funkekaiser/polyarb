@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     max_markets_per_scan: int = 80
     # per-execution round-trip gas estimate (USDC), applied once per opportunity
     gas_estimate: Decimal = Decimal(0)
+    # A3 — staleness gate: drop order books whose CLOB last-change timestamp is older than this.
+    # This is a *gross-staleness / corrupt-snapshot* net (the CLOB has served hours-old
+    # 0.01/0.99 snapshots that would manufacture phantom arbs), NOT a fine freshness guarantee:
+    # a book quiescent-but-valid (resting orders still executable) also has an old timestamp, so
+    # too low a value drops genuine thin-market arbs as false negatives. Default is deliberately
+    # generous; lower it to trade thin-market coverage for stricter staleness. 0 disables.
+    max_book_age_s: float = 900.0
 
     # --- notifier (off unless configured) ---
     notifier: str = "none"  # none | webhook | ntfy | discord | telegram

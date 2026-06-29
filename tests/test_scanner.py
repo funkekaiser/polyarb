@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from decimal import Decimal
 
 import httpx
@@ -48,11 +49,13 @@ EVENTS = [
 ]
 
 
-def _book(asset_id: str, *, ask: str, bid: str) -> dict:
+def _book(asset_id: str, *, ask: str, bid: str, age_s: float = 0.0) -> dict:
+    # Fresh CLOB book timestamp (epoch ms) so the A3 staleness gate keeps it; ``age_s`` backdates
+    # it to exercise the gate's drop path.
     return {
         "market": "0xC",
         "asset_id": asset_id,
-        "timestamp": "1",
+        "timestamp": str(int((time.time() - age_s) * 1000)),
         "bids": [{"price": bid, "size": "500"}],
         "asks": [{"price": ask, "size": "500"}],
         "neg_risk": False,
@@ -120,6 +123,18 @@ def test_scanner_detects_and_persists_complement_under() -> None:
     # persisted to SQLite
     assert store.count() == 1
     assert store.recent(10)[0].net_profit == Decimal("0.10")
+    store.close()
+
+
+def test_scanner_drops_stale_books() -> None:
+    # A3: same profitable complement, but both books are far older than max_book_age_s (60s) →
+    # the staleness gate drops them and nothing is detected (a stale quote can't make an arb).
+    books = {
+        "Y": _book("Y", ask="0.40", bid="0.30", age_s=3600),
+        "N": _book("N", ask="0.50", bid="0.40", age_s=3600),
+    }
+    opps, store = _run_scan(books)
+    assert opps == []
     store.close()
 
 

@@ -61,6 +61,27 @@ def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
     return out
 
 
+def _fresh_books(
+    books: dict[str, OrderBook], now: datetime, max_age_s: float
+) -> dict[str, OrderBook]:
+    """Drop books whose CLOB *last-change* timestamp is older than ``max_age_s`` (vs ``now``).
+
+    ``timestamp_ms`` is the time the book last changed (verified against the live CLOB), not our
+    fetch time — so ``now - timestamp_ms`` is a real age. A dropped book makes its detector
+    short-circuit (book is None), which can only ever cause a false negative (missed opp), never
+    a false positive. This catches grossly-stale / corrupt snapshots; it does NOT distinguish a
+    corrupt snapshot from a quiescent-but-valid book (whose resting orders are still
+    executable), so it's a conservative net, not a freshness guarantee. Cross-leg skew is
+    bounded by roughly ``max_age_s`` (plus per-pass fetch latency, since ``now`` is captured
+    once at scan start). ``max_age_s <= 0`` disables. Future-dated books (clock skew) are kept.
+    """
+    if max_age_s <= 0:
+        return books
+    now_ms = int(now.timestamp() * 1000)
+    cutoff_ms = int(max_age_s * 1000)
+    return {t: b for t, b in books.items() if now_ms - b.timestamp_ms <= cutoff_ms}
+
+
 def resolution_risk_for(opp: Opportunity, markets_by_condition: dict[str, Market]) -> str:
     """Resolution-risk tag for an opportunity.
 
@@ -152,10 +173,18 @@ class Scanner:
         token_ids: set[str] = set()
         for market in markets:
             token_ids.update(market.clob_token_ids[:2])
-        books = await self._fetch_books(token_ids)
-        log.info("scan_fetched", events=len(events), markets=len(markets), books=len(books))
+        now = datetime.now(UTC)  # one reference point for the whole pass (see _fresh_books)
+        fetched = await self._fetch_books(token_ids)
+        books = _fresh_books(fetched, now, s.max_book_age_s)
+        stale_dropped = len(fetched) - len(books)  # accumulates per-event extra drops below
+        log.info(
+            "scan_fetched",
+            events=len(events),
+            markets=len(markets),
+            books=len(books),
+            stale_dropped=stale_dropped,
+        )
 
-        now = datetime.now(UTC)
         opps: list[Opportunity] = []
         global_snap = Snapshot(
             books=books,
@@ -180,8 +209,12 @@ class Scanner:
                 and m.active
                 and not m.closed
                 and m.accepting_orders
-            } - books.keys()
-            event_books = books | (await self._fetch_books(needed) if needed else {})
+            } - fetched.keys()  # fetched (not books): a stale global token is already dropped —
+            # don't waste a round-trip re-fetching it just to drop it again.
+            extra = await self._fetch_books(needed) if needed else {}
+            fresh_extra = _fresh_books(extra, now, s.max_book_age_s)
+            stale_dropped += len(extra) - len(fresh_extra)
+            event_books = books | fresh_extra
             for market in event.markets:
                 by_condition.setdefault(market.condition_id, market)
             opps.extend(
@@ -234,6 +267,7 @@ class Scanner:
             "scan_complete",
             candidates=len(opps),
             candidates_by_detector=dict(candidates_by_detector),
+            stale_dropped=stale_dropped,
             **vars(filt.stats),
         )
         return kept

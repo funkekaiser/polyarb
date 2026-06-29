@@ -34,6 +34,7 @@ def test_feed_market_extracts_fee_rate_from_schedule() -> None:
     assert m.fee_type == "crypto_fees_v2"
     assert m.fee_rate == Decimal("0.07")
     assert not m.is_fee_free
+    assert m.custom_liveness == 600  # A2: real fixture carries customLiveness; must parse
 
 
 def test_negrisk_event_is_multi_outcome() -> None:
@@ -91,3 +92,13 @@ def test_market_neg_risk_other_field_parsed() -> None:
 
     without_flag = Market.model_validate({"id": "1", "conditionId": "0x1", "question": "q"})
     assert without_flag.neg_risk_other is False
+
+
+def test_market_custom_liveness_parsed() -> None:
+    """A2: customLiveness alias round-trips; absent or null/blank coerces to 0 (was dropped)."""
+    base = {"id": "1", "conditionId": "0x1", "question": "q"}
+    assert Market.model_validate({**base, "customLiveness": 120}).custom_liveness == 120
+    assert Market.model_validate({**base, "customLiveness": "120"}).custom_liveness == 120
+    assert Market.model_validate(base).custom_liveness == 0  # absent → 0
+    assert Market.model_validate({**base, "customLiveness": None}).custom_liveness == 0  # null → 0
+    assert Market.model_validate({**base, "customLiveness": ""}).custom_liveness == 0  # blank → 0

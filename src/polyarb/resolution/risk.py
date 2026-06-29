@@ -21,6 +21,12 @@ class ResolutionRisk(StrEnum):
     AT_RISK = "at_risk"  # subjective / dispute-prone — default-excluded
 
 
+# UMA's default dispute-window length (seconds) for Polymarket; ``customLiveness == 0`` means
+# "use this default". A market that sets a *longer-than-default* window is marginally more
+# contention-prone — a weak, forward-looking signal (see classify_market).
+_UMA_DEFAULT_LIVENESS_S = 7200
+
+
 _RISK_ORDER: dict[ResolutionRisk, int] = {
     ResolutionRisk.OBJECTIVE: 0,
     ResolutionRisk.STANDARD: 1,
@@ -42,7 +48,19 @@ def risk_rank(risk: ResolutionRisk | str | None) -> int:
 
 
 def classify_market(market: Market) -> ResolutionRisk:
-    """Map a market's category (via its fee type) to a resolution-risk tag."""
+    """Map a market to a resolution-risk tag (its category via fee type, plus a weak void nudge).
+
+    A2 (partial) — a *longer-than-default* UMA dispute window (``custom_liveness >
+    _UMA_DEFAULT_LIVENESS_S``) is a weak signal of a more contention-prone resolution, so we
+    rank it down (ELEVATED), not exclude it. This is deliberately mild: ``customLiveness`` is the
+    dispute-window *length*, not a void probability, and on current markets it is almost always
+    0 — so it neither detects nor meaningfully gates the real A2 risk (a leg resolving 50-50 /
+    void, which breaks the basket's "exactly one pays $1" floor). **That core void risk remains
+    open** (not reliably detectable from available data — see STRATEGY_BACKLOG A2); the only
+    concrete void protection today is `live_partition` dropping already-voided *closed* legs.
+    """
+    if market.custom_liveness > _UMA_DEFAULT_LIVENESS_S:
+        return ResolutionRisk.ELEVATED
     fee_type = (market.fee_type or "").lower()
     if any(token in fee_type for token in ("crypto", "finance", "price", "sports")):
         return ResolutionRisk.OBJECTIVE

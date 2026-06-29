@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
+from polyarb.models import Market
 from polyarb.resolution.risk import (
     ResolutionRisk,
     aggregate_risk,
@@ -34,3 +37,31 @@ def test_aggregate_empty_defaults_standard() -> None:
 def test_risk_rank_orders_objective_below_at_risk() -> None:
     assert risk_rank(ResolutionRisk.OBJECTIVE) < risk_rank(ResolutionRisk.AT_RISK)
     assert risk_rank("nonsense") == risk_rank(ResolutionRisk.STANDARD)
+
+
+def _market_with_liveness(seconds: int) -> Market:
+    return Market(
+        id="1",
+        condition_id="0xA",
+        question="Q?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=["y", "n"],
+        fees_enabled=True,
+        fee_type="crypto_fees_v2",  # would classify OBJECTIVE on category alone
+        fee_rate=Decimal("0.07"),
+        custom_liveness=seconds,
+    )
+
+
+def test_long_liveness_is_elevated() -> None:
+    # A2: a longer-than-default UMA dispute window is a weak contention signal → ELEVATED
+    # (rank-down, NOT hard-exclude), overriding the otherwise-OBJECTIVE crypto category.
+    assert classify_market(_market_with_liveness(10800)) == ResolutionRisk.ELEVATED  # 3h > 2h
+
+
+def test_short_or_default_liveness_keeps_category() -> None:
+    # Default (0) and shorter-than-default windows do NOT elevate — would fail if the threshold
+    # were `> 0` instead of `> _UMA_DEFAULT_LIVENESS_S`.
+    assert classify_market(_market_with_liveness(0)) == ResolutionRisk.OBJECTIVE
+    assert classify_market(_market_with_liveness(600)) == ResolutionRisk.OBJECTIVE  # 10m < 2h
+    assert classify_market(make_market(fee_rate=0.07)) == ResolutionRisk.OBJECTIVE
