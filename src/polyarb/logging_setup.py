@@ -17,6 +17,14 @@ def configure_logging(level: str = "INFO") -> None:
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", level=log_level)
 
+    # httpx/httpcore log every request line at INFO ("HTTP Request: GET ... 404 Not Found").
+    # During a scan that's hundreds of lines per pass — including the expected 404s for tokens
+    # without a live CLOB book, which the scanner already skips — and it drowns our structured
+    # logs. Keep them quiet at INFO; honor the chosen level only when it's DEBUG.
+    third_party_level = max(log_level, logging.WARNING)
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(third_party_level)
+
     renderer: structlog.types.Processor = (
         structlog.dev.ConsoleRenderer()
         if sys.stdout.isatty()
