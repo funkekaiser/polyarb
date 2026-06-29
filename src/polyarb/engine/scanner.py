@@ -246,9 +246,9 @@ class Scanner:
         filt = OpportunityFilter(s, self._dedupe)
         kept = rank(filt.apply(opps))
 
-        emitted = 0  # count actual successes, not len(kept) — a store/notify failure shouldn't
-        # inflate the emitted metric exactly when the system is degraded (disk full, SQLite
-        # locked, webhook down) and accurate monitoring matters most.
+        emitted = 0  # count opps actually PERSISTED, not len(kept) — a store failure shouldn't
+        # inflate the metric exactly when the system is degraded (disk full, SQLite locked) and
+        # accurate monitoring matters most. (Counts after record; notify is best-effort.)
         for opp in kept:
             # Guard each emit independently: a store/notify failure on one opp must not abort
             # the loop and silently drop the rest (they were already marked "seen" in the
@@ -256,8 +256,8 @@ class Scanner:
             # cooldown window).
             try:
                 self._store.record(opp)
+                emitted += 1  # persisted; matches store.count(). notify is best-effort below.
                 await self._notifier.notify(opp)
-                emitted += 1
                 log.info(
                     "opportunity",
                     detector=str(opp.detector),
@@ -278,7 +278,8 @@ class Scanner:
         for detector_name, n in candidates_by_detector.items():
             self._totals[f"candidates.{detector_name}"] += n
             metrics.CANDIDATES.labels(detector=detector_name).inc(n)
-        # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / emitted.
+        # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / kept
+        # ("kept" = passed filters; the persisted count is `emitted` in scanner_stopped totals).
         log.info(
             "scan_complete",
             candidates=len(opps),

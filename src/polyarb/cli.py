@@ -76,8 +76,10 @@ def scan(
 
     async def _run() -> None:
         async with GammaClient() as gamma, ClobClient() as clob:
-            store = SqliteStore(settings.sqlite_path)
+            # Build the notifier first: a bad notifier config (e.g. webhook with no URL) raises
+            # here, before the store is opened, so the SQLite connection can't leak on that path.
             notifier = build_notifier(settings.notifier, settings.notifier_url)
+            store = SqliteStore(settings.sqlite_path)
             scanner = Scanner(settings, gamma=gamma, clob=clob, store=store, notifier=notifier)
             try:
                 await scanner.run(passes=passes, max_seconds=max_seconds or None)

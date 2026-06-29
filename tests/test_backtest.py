@@ -159,6 +159,28 @@ def test_total_would_be_pnl() -> None:
     assert s.total_would_be_pnl == Decimal("20.00")
 
 
+def test_directional_ev_split_from_structural_pnl() -> None:
+    # A PARTIAL_BASKET opp's P&L is a directional, optimistic EV — it must land in directional_ev,
+    # never inflate the structural total_would_be_pnl headline.
+    structural = _opp(
+        detector=DetectorKind.NEGRISK_BASKET,
+        net_profit_bps="100",
+        net_profit="0.10",
+        executable_size="100",
+        realizes="resolution",
+    )  # $10
+    partial = _opp(
+        detector=DetectorKind.PARTIAL_BASKET,
+        net_profit_bps="50",
+        net_profit="0.05",
+        executable_size="100",
+        realizes="resolution",
+    )  # $5
+    s = summarize([structural, partial])
+    assert s.total_would_be_pnl == Decimal("10.00")  # structural only
+    assert s.directional_ev == Decimal("5.00")  # partial separated out
+
+
 def test_total_executable_notional() -> None:
     # opp A: cost=0.90 * size=100 = 90
     # opp B: cost=0.50 * size=200 = 100

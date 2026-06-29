@@ -72,7 +72,7 @@ def test_allows_at_risk_when_not_excluding() -> None:
 def test_passes_good_opportunity() -> None:
     filt = OpportunityFilter(_settings())
     assert len(filt.apply([_opp()])) == 1
-    assert filt.stats.emitted == 1
+    assert filt.stats.kept == 1  # passed all filters (not the store/notify success count)
 
 
 def test_dedupe_suppresses_repeat_within_cooldown() -> None:

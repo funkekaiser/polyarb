@@ -64,14 +64,21 @@ def add_relation(antecedent: str, consequent: str, description: str) -> Relation
     """Declare and register a relation in the seed graph; returns it."""
     if antecedent == consequent:
         raise ValueError("a relation's antecedent and consequent must differ (no self-loops)")
-    relation = Relation(antecedent, consequent, description)
     # Dedupe on the (antecedent, consequent) pair: a duplicate declaration would otherwise make
-    # the dependency detector score — and emit — the same pair twice.
-    if not any(
-        r.antecedent_condition_id == antecedent and r.consequent_condition_id == consequent
-        for r in SEED_RELATIONS
-    ):
-        SEED_RELATIONS.append(relation)
+    # the dependency detector score — and emit — the same pair twice. First declaration wins;
+    # return the *registered* relation so a caller's captured object matches what's in the graph.
+    existing = next(
+        (
+            r
+            for r in SEED_RELATIONS
+            if r.antecedent_condition_id == antecedent and r.consequent_condition_id == consequent
+        ),
+        None,
+    )
+    if existing is not None:
+        return existing
+    relation = Relation(antecedent, consequent, description)
+    SEED_RELATIONS.append(relation)
     return relation
 
 

@@ -63,7 +63,8 @@ class FilterStats:
     below_notional: int = 0
     at_risk: int = 0
     deduped: int = 0
-    emitted: int = 0
+    kept: int = 0  # passed all filters (ranked + handed to emit); NOT the store/notify success
+    # count — that's the scanner's `emitted` total. Distinct names so the two don't collide in logs.
 
 
 class OpportunityFilter:
@@ -95,7 +96,7 @@ class OpportunityFilter:
             self.stats.deduped += 1
             return False
 
-        self.stats.emitted += 1
+        self.stats.kept += 1
         return True
 
     def apply(self, opps: list[Opportunity]) -> list[Opportunity]:
