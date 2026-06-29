@@ -47,6 +47,37 @@ rate limits with backoff, resolution-risk gating, NegRisk-convert-≠-arbitrage,
 hit the live API — is in **SPEC.md §"Non-negotiable constraints"**. Read it before
 substantive work.
 
+## Operating model — orchestrate, don't grind
+
+You are the **orchestrator**, not the line worker. Your scarcest resource is the *big
+picture* — the SPEC math, the cross-cutting invariants, the plan in your head — not tokens.
+Spend it on judgment; delegate the grind. A turn should look like: **plan → delegate scoped
+pieces (parallel where independent) → verify → synthesize → decide.** You stay at the seams;
+subagents do the volume.
+
+- **Default to delegation.** Before doing a task yourself, ask: *could a subagent do this from
+  a crisp spec?* If yes, write the spec and delegate. The act of writing the spec externalizes
+  the big picture — which is exactly what makes it safe to hand off.
+- **Code it yourself only when** you are the *sole* holder of the picture **and** the work is
+  too tightly coupled to specify without basically doing it — or it's a trivial one-liner.
+  "I understand it best" is not a reason to type it; it's a reason to write the spec.
+- **Right model for the job** (pick deliberately, per call):
+  - **Opus (you):** planning, cross-cutting design, the profit-math/SPEC reasoning, spec and
+    design-doc authoring, final review, synthesis, judgment calls.
+  - **Sonnet:** scoped implementation from a spec (a detector, a client, a bounded refactor),
+    bug-hunts, code review, multi-file search.
+  - **Haiku:** cheap mechanical sweeps — grep/format/rename, fixture munging, simple lookups.
+- **Parallelize.** Fan out independent work in one message (multiple `Agent` calls). Let each
+  subagent absorb the tool-output noise (file dumps, search hits, test logs) and return only
+  the conclusion, so your context stays clean.
+- **Never trust a "done" — verify.** Delegated output is a *proposal* until you've run the gate
+  (`ruff` + `mypy` + `pytest`) or had an adversarial reviewer (often a separate subagent) try
+  to break it. This repo earns correctness through adversarial verification (docs/TESTING.md);
+  hold delegated work to that bar. The final correctness call is always yours.
+- **Caveat:** subagents sharing this repo's venv can re-trigger the macOS `.pth` hidden-flag
+  issue (see "venv" below). Tell file-only agents not to run `uv sync`/`uv run`, or give a
+  mutating agent `isolation: "worktree"`.
+
 ## Workflow: phased, with review gates
 
 Work the phases in `SPEC.md` **in order, one at a time**. At the end of each phase: run
