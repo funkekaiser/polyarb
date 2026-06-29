@@ -65,7 +65,7 @@ def test_days_zero_annualizes_high_not_none() -> None:
         profit=_profit(),
         executable_size=ONE,
         realizes="resolution",
-        days_to_resolution=0,
+        days_by_condition={"0x1": 0},
     )
     assert opp0.annualized is not None
     # days floored to 1 → (0.10/0.90) * 365
@@ -81,7 +81,7 @@ def test_days_none_leaves_annualized_none() -> None:
         profit=_profit(),
         executable_size=ONE,
         realizes="resolution",
-        days_to_resolution=None,
+        days_by_condition=None,
     )
     assert opp.annualized is None
 
@@ -159,8 +159,11 @@ def test_ladder_skips_equal_bounds() -> None:
 # ── Second adversarial bug-hunt (2026-06-29) ──────────────────────────────────
 
 
-# Bug 9 — dependency days_to_resolution of 0 (resolves today) must not be lost to `or`.
-def test_dependency_days_zero_not_swallowed() -> None:
+# Bug 9 / D3 — dependency horizon is max(legs): capital is locked until the LATER leg resolves.
+# (This supersedes the old "use B's horizon" rule — A, the antecedent, can resolve after B, e.g.
+# a sports nesting where make-playoffs (B) settles before win-championship (A). Discriminating:
+# B=10, A=100 → D3 gives 100; the old B-with-fallback gave 10.)
+def test_dependency_horizon_is_max_of_legs() -> None:
     a = make_market("0xA", yes="yA", no="nA")
     b = make_market("0xB", yes="yB", no="nB")
     snap = Snapshot(
@@ -170,12 +173,10 @@ def test_dependency_days_zero_not_swallowed() -> None:
             "nA": make_book("nA", asks=[("0.30", "50")]),
             "yB": make_book("yB", asks=[("0.30", "80")]),
         },
-        days_to_resolution={"0xB": 0, "0xA": 365},  # B today; falsy 0 must win, not 365
+        days_to_resolution={"0xB": 10, "0xA": 100},  # A resolves later → max is 100, not B's 10
     )
     opp = next(iter(DependencyDetector().detect(snap)))
-    assert opp.days_to_resolution == 0
-    # floored to 1 day -> maximal annualization, not the 365-day (~1x) figure.
-    assert opp.annualized == (opp.net_profit / opp.cost) * Decimal(365)
+    assert opp.days_to_resolution == 100  # max(10, 100), not B's 10
 
 
 # Bug 10 — a malformed (non-httpx) book error must not kill the whole scan pass.
@@ -219,7 +220,6 @@ def test_webhook_notify_swallows_invalid_url() -> None:
         profit=_profit(),
         executable_size=ONE,
         realizes="instant",
-        days_to_resolution=None,
     )
     notifier = WebhookNotifier("not-a-url", client=_RaisingClient())  # type: ignore[arg-type]
     asyncio.run(notifier.notify(opp))  # must not raise

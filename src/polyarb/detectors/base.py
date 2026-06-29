@@ -12,7 +12,7 @@ fees (per set, before gas). Gas is a fixed per-execution cost applied in
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import ClassVar, Literal, Protocol, runtime_checkable
@@ -77,15 +77,28 @@ def make_opportunity(
     executable_size: Decimal,
     realizes: Literal["instant", "resolution"],
     event_id: str | None = None,
-    days_to_resolution: int | None = None,
+    days_by_condition: Mapping[str, int] | None = None,
     gas: Decimal = ZERO,
 ) -> Opportunity:
     """Assemble an Opportunity, computing gas-adjusted bps and annualized return.
 
-    ``gas`` is a fixed per-execution cost (one tx regardless of set count). All per-set
-    fields (cost, gross_profit, fees, net_profit) remain clean per-set; the gas cost and the
+    ``gas`` is the per-execution cost (leg-count-scaled upstream via ``Snapshot.gas_for``). All
+    per-set fields (cost, gross_profit, fees, net_profit) remain clean per-set; gas and the
     resulting gas-adjusted totals are computed here at the execution level.
+
+    D3 — a held arb locks capital until its *latest* leg resolves, so the horizon is the **max**
+    ``days_to_resolution`` over the legs the opp actually spans (``condition_ids``), not the
+    first/either leg. ``days_by_condition`` maps condition_id → days; we take the max over the
+    present spanned legs (None if none are known). Centralized here so every detector is
+    consistent and scoped to the opp's own legs.
     """
+    spanned_days = (
+        [days_by_condition[c] for c in condition_ids if c in days_by_condition]
+        if days_by_condition
+        else []
+    )
+    days_to_resolution = max(spanned_days) if spanned_days else None
+
     net_set = profit.net_profit  # per set, before gas
     total_cost = executable_size * profit.cost
     total_net = executable_size * net_set - gas

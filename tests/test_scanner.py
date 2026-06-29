@@ -263,7 +263,6 @@ def test_instant_arbs_are_resolution_risk_free() -> None:
         profit=profit,
         executable_size=Decimal(1),
         realizes="instant",
-        days_to_resolution=None,
     )
     held = instant.model_copy(update={"realizes": "resolution"})
 

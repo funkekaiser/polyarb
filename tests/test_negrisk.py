@@ -79,6 +79,16 @@ def test_annualized_computed_from_days() -> None:
     assert opp.annualized == (Decimal("0.10") / Decimal("0.90")) * (Decimal(365) / Decimal(365))
 
 
+def test_basket_horizon_is_max_of_legs() -> None:
+    # D3: capital locks until the LATEST leg resolves → annualize on max(leg days), not the
+    # first known. Legs {10, 100, 50} → 100. (Old "first known" would have given 10.)
+    snap = _three_outcome_snapshot(
+        ["0.30", "0.30", "0.30"], days={"0x0": 10, "0x1": 100, "0x2": 50}
+    )
+    opp = next(iter(NegRiskBasketDetector().detect(snap)))
+    assert opp.days_to_resolution == 100
+
+
 def test_not_multi_outcome_event_ignored() -> None:
     # Only 2 markets → not a NegRisk basket (need N>=3).
     markets = [make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True) for i in range(2)]

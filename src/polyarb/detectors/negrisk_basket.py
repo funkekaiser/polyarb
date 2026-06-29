@@ -148,14 +148,6 @@ class NegRiskBasketDetector:
             for i in range(len(token_ids))
         ]
 
-        days = next(
-            (
-                snap.days_to_resolution[m.condition_id]
-                for m in event.markets
-                if m.condition_id in snap.days_to_resolution
-            ),
-            None,
-        )
         yield make_opportunity(
             detector=self.kind,
             description=f"negrisk basket under: {event.title.strip()} (Σ YES = {profit.cost})",
@@ -165,7 +157,7 @@ class NegRiskBasketDetector:
             executable_size=size,
             realizes="resolution",
             event_id=event.id,
-            days_to_resolution=days,
+            days_by_condition=snap.days_to_resolution,
             gas=gas,
         )
 
@@ -242,14 +234,6 @@ class NegRiskDualDetector:
             for i in range(len(token_ids))
         ]
 
-        days = next(
-            (
-                snap.days_to_resolution[m.condition_id]
-                for m in event.markets
-                if m.condition_id in snap.days_to_resolution
-            ),
-            None,
-        )
         yield make_opportunity(
             detector=self.kind,
             description=f"negrisk NO-dual: {event.title.strip()} (Σ NO={profit.cost})",
@@ -259,6 +243,6 @@ class NegRiskDualDetector:
             executable_size=size,
             realizes="resolution",
             event_id=event.id,
-            days_to_resolution=days,
+            days_by_condition=snap.days_to_resolution,
             gas=gas,
         )

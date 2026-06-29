@@ -80,12 +80,6 @@ class DependencyDetector:
                 continue
             size, leg_costs, profit = result
 
-            # Use B's horizon, falling back to A's — but with an explicit None check, not
-            # `or`: a legitimate days_to_resolution of 0 (resolves today) is falsy and would
-            # otherwise be silently replaced by A's horizon, mis-annualizing the opp.
-            days = snap.days_to_resolution.get(market_b.condition_id)
-            if days is None:
-                days = snap.days_to_resolution.get(market_a.condition_id)
             yield make_opportunity(
                 detector=self.kind,
                 description=f"dependency violation: {relation.description}",
@@ -109,6 +103,6 @@ class DependencyDetector:
                 profit=profit,
                 executable_size=size,
                 realizes="resolution",
-                days_to_resolution=days,
+                days_by_condition=snap.days_to_resolution,
                 gas=gas,
             )

@@ -113,14 +113,6 @@ class PartialBasketDetector:
             )
             for i in range(len(token_ids))
         ]
-        days = next(
-            (
-                snap.days_to_resolution[m.condition_id]
-                for m in event.markets
-                if m.condition_id in snap.days_to_resolution
-            ),
-            None,
-        )
         n_total = len(token_ids) + unbuyable
         max_loss = profit.cost * size  # full stake, lost when the winner is in the dropped set
         yield make_opportunity(
@@ -136,6 +128,6 @@ class PartialBasketDetector:
             executable_size=size,
             realizes="resolution",
             event_id=event.id,
-            days_to_resolution=days,
+            days_by_condition=snap.days_to_resolution,
             gas=gas,
         )
