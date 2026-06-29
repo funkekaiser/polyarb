@@ -23,7 +23,7 @@ from polyarb.config import Settings
 from polyarb.detectors.base import Snapshot
 from polyarb.detectors.complement import ComplementDetector
 from polyarb.detectors.dependency import DependencyDetector
-from polyarb.detectors.negrisk_basket import NegRiskBasketDetector
+from polyarb.detectors.negrisk_basket import NegRiskBasketDetector, NegRiskDualDetector
 from polyarb.engine import metrics
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
@@ -125,6 +125,7 @@ class Scanner:
         )
         self._complement = ComplementDetector()
         self._negrisk = NegRiskBasketDetector()
+        self._negrisk_dual = NegRiskDualDetector()
         self._dependency = DependencyDetector()
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
         # Cumulative metrics across passes (Prometheus /metrics could expose these later).
@@ -199,16 +200,17 @@ class Scanner:
         for event in events:
             if not event.is_multi_outcome:
                 continue
-            # Only fetch books for *live* constituents — the basket detector drops eliminated
-            # (closed) outcomes from the partition, so their (often absent) books are noise.
+            # Fetch books for *live* constituents only (eliminated outcomes are dropped from the
+            # partition). Both tokens: the YES basket uses YES books, the NO-dual uses NO books.
             needed = {
-                m.yes_token_id
+                tid
                 for m in event.markets
                 if m.is_binary
                 and m.clob_token_ids
                 and m.active
                 and not m.closed
                 and m.accepting_orders
+                for tid in m.clob_token_ids[:2]
             } - fetched.keys()  # fetched (not books): a stale global token is already dropped —
             # don't waste a round-trip re-fetching it just to drop it again.
             extra = await self._fetch_books(needed) if needed else {}
@@ -217,16 +219,14 @@ class Scanner:
             event_books = books | fresh_extra
             for market in event.markets:
                 by_condition.setdefault(market.condition_id, market)
-            opps.extend(
-                self._negrisk.detect(
-                    Snapshot(
-                        books=event_books,
-                        event=event,
-                        gas=s.gas_estimate,
-                        days_to_resolution=_days_to_resolution(event.markets, now),
-                    )
-                )
+            event_snap = Snapshot(
+                books=event_books,
+                event=event,
+                gas=s.gas_estimate,
+                days_to_resolution=_days_to_resolution(event.markets, now),
             )
+            opps.extend(self._negrisk.detect(event_snap))
+            opps.extend(self._negrisk_dual.detect(event_snap))
 
         for opp in opps:
             opp.resolution_risk = resolution_risk_for(opp, by_condition)

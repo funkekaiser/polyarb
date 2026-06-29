@@ -68,19 +68,35 @@ since then the partition can't be proven complete. This recovers the most common
 all" case (eliminations) while refusing the catastrophic one. See
 `detectors/negrisk_basket.py`, STRATEGY_BACKLOG A1.
 
-### 2. The NO-basket dual (`Σ NO < M − 1`) — **next to implement (B3)**
+### 2. The NO-basket dual (`Σ NO < M − 1`) — **done (B3, 2026-06-29)**
 Over `M` live outcomes, exactly `M−1` resolve NO, so **buying 1 NO of every live outcome pays
 a guaranteed `M−1`**. Arb if `Σ_live a_no,i < M − 1 − fees − gas`. This is the structural
 hedge for *feasibility*: when the YES side is thin or edge-eroded, the NO side may have depth
-elsewhere. It is a *different trade*, not a directional slice: still a guaranteed payoff, still
-model-free. Realizes at resolution.
+elsewhere. It is a *different trade*, not a directional slice: a guaranteed payoff under {0,1}
+resolution. Realizes at resolution. (`NegRiskDualDetector` in `detectors/negrisk_basket.py`.)
 
-**Precondition is weaker than A1's.** The `M−1` *floor* needs only **mutual exclusivity**
-(≤1 YES among the live legs), which NegRisk guarantees by construction — so B3 must **not**
-inherit A1's augmented-skip or closed-YES guards: even if a dropped leg actually won, the NO
-basket pays `M ≥ M−1` and the floor holds. (Full exhaustiveness would only tighten "≥ M−1" to
-"exactly M−1", which the arb doesn't require.) Reuse A1's *tradeability/hole* filtering, not
-its exhaustiveness gates.
+**⚠ Void asymmetry — the dual's dominant tail (committee CRITICAL).** Unlike the YES basket,
+the dual's floor is *not* robust to a 50-50 **void**. A losing leg that voids pays its NO
+**$0.50 instead of $1** — a −$0.50 hit — and there are `M−1` losers, so the dual is ~`(M−1)×`
+more void-exposed, worst exactly when its edge is thinnest (~`1/(M−1)` of the YES side); a
+single void can exceed the entire edge. (Symmetric opposite for the YES basket: a *loser*
+voiding pays YES_i $0.50, a +$0.50 *gain* — the YES basket is void-robust on losers and only
+exposed on the 1 winner.) Because void-proneness isn't otherwise detectable (A2), the dual
+**only emits when every live leg resolves on a void-resistant (OBJECTIVE) source** (price /
+sports / crypto); void-prone events are refused. This is the committee's "void-source gating"
+fix and is why the dual ships, conservatively, rather than as a broad model-free detector.
+
+**Implementation note.** The detector reuses `live_partition(skip_augmented=False)` — opting
+out of the augmented gate (mutual exclusivity suffices) but *conservatively keeping* the other
+gates (a closed winner/void/unknown leg → skip the whole event). Those are safe false-negatives
+for the dual (a decided event has `Σ NO_live ≈ M > M−1`, no edge anyway), so we accept the lost
+coverage rather than special-case them.
+
+**Precondition is weaker than A1's** (mutual exclusivity, not full exhaustiveness): even if a
+dropped leg actually won, the NO basket pays `M ≥ M−1` and the floor holds. So B3 opts out of
+the **augmented** skip. It could in principle also drop the closed-YES/void/unknown skips, but
+the implementation keeps them (a conservative false-negative — a decided event has no edge
+anyway), trading a little coverage for simplicity. The *value* leader is still the YES basket.
 
 **Caveats (execution, from the committee).** The NO-dual is a **coverage** tool, not a value
 leader: it deploys ≈`M−1` dollars for the *same absolute* edge as the YES basket's ≈`<$1`, so
@@ -127,9 +143,9 @@ probabilistic bet, not a structural identity.
 
 ## Build order
 
-1. **A2 / A3 basket correctness** (void/50-50 handling, staleness/time-skew gate) — the
-   remaining structural "guaranteed $1 can be $0" risks. *(In progress.)*
-2. **NO-dual (§2 / B3)** — model-free coverage tool; reuses `live_partition(skip_augmented=
-   False)`. Property-test the `M−1` payoff identity.
-3. **Probabilistic partial basket (§5, opt-in)** — per the decision above; off by default,
-   separate class, conservative lower-bound EV.
+1. **A2 / A3 basket correctness** (void/50-50 handling, staleness/time-skew gate) — **done**
+   (A3 staleness net + A2 partial: void is documented-open; see STRATEGY_BACKLOG).
+2. **NO-dual (§2 / B3)** — **done**: model-free coverage tool, void-gated to OBJECTIVE legs,
+   reuses `live_partition(skip_augmented=False)`; `M−1` identity property-/committee-checked.
+3. **Probabilistic partial basket (§5, opt-in)** — *next*; per the decision above; off by
+   default, separate class, conservative lower-bound EV.

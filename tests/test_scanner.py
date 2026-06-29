@@ -49,6 +49,34 @@ EVENTS = [
 ]
 
 
+def _negrisk_market(condition_id: str, yes: str, no: str) -> dict:
+    # OBJECTIVE (feeType carries "sports") so it passes the NO-dual's void gate; fee-free.
+    return {
+        "id": "20",
+        "conditionId": condition_id,
+        "question": "Who wins?",
+        "outcomes": json.dumps(["Yes", "No"]),
+        "clobTokenIds": json.dumps([yes, no]),
+        "active": True,
+        "closed": False,
+        "negRisk": True,
+        "acceptingOrders": True,
+        "feeType": "sports_fees_v2",
+        "orderPriceMinTickSize": 0.01,
+        "orderMinSize": 5,
+    }
+
+
+NEGRISK_EVENT = {
+    "id": "2",
+    "title": "Who wins the cup?",
+    "negRisk": True,
+    "active": True,
+    "closed": False,
+    "markets": [_negrisk_market(f"0xD{i}", f"DY{i}", f"DN{i}") for i in range(3)],
+}
+
+
 def _book(asset_id: str, *, ask: str, bid: str, age_s: float = 0.0) -> dict:
     # Fresh CLOB book timestamp (epoch ms) so the A3 staleness gate keeps it; ``age_s`` backdates
     # it to exercise the gate's drop path.
@@ -135,6 +163,18 @@ def test_scanner_drops_stale_books() -> None:
     }
     opps, store = _run_scan(books)
     assert opps == []
+    store.close()
+
+
+def test_scanner_detects_negrisk_dual() -> None:
+    # End-to-end NO-dual: a 3-outcome OBJECTIVE negRisk event with NO asks Σ=1.80 < 2 (M-1) →
+    # the scanner fetches NO books and the dual fires. YES asks Σ=1.20 ≥ 1 → no YES basket.
+    books = {f"DN{i}": _book(f"DN{i}", ask="0.60", bid="0.50") for i in range(3)}
+    books |= {f"DY{i}": _book(f"DY{i}", ask="0.40", bid="0.30") for i in range(3)}
+    opps, store = _run_scan(books, events=[NEGRISK_EVENT])
+    kinds = {opp.detector for opp in opps}
+    assert DetectorKind.NEGRISK_DUAL in kinds
+    assert DetectorKind.NEGRISK_BASKET not in kinds  # Σ YES = 1.2, no basket arb
     store.close()
 
 

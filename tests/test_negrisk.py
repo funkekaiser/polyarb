@@ -7,11 +7,13 @@ from decimal import Decimal
 from polyarb.detectors.base import Snapshot
 from polyarb.detectors.negrisk_basket import (
     NegRiskBasketDetector,
+    NegRiskDualDetector,
     basket_profit,
+    dual_profit,
     live_partition,
     negrisk_convert_pnl,
 )
-from polyarb.models import Event, Market
+from polyarb.models import DetectorKind, Event, Market
 from polyarb.pricing.fees import taker_fee
 from tests.helpers import make_book, make_event, make_market
 
@@ -571,3 +573,123 @@ def test_neg_risk_other_leg_included_in_basket() -> None:
     assert len(opp.legs) == 3
     assert "0xOther" in opp.condition_ids
     assert "yOther" in {leg.token_id for leg in opp.legs}
+
+
+# ---------------------------------------------------------------------------
+# NO-BASKET DUAL (B3) — buy 1 NO of every outcome; exactly M-1 pay → payoff M-1
+# ---------------------------------------------------------------------------
+
+
+def _objective_market(i: int) -> Market:
+    # Void-resistant (OBJECTIVE) AND fee-free: fee_type carries "sports" → classify OBJECTIVE,
+    # while fee_rate=None keeps it fee-free (fee_rate_for → 0), so the dual void-gate passes and
+    # the profit assertions stay clean. The dual refuses non-OBJECTIVE legs (see refuse test).
+    return Market(
+        id=str(i),
+        condition_id=f"0x{i}",
+        question="Q?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=[f"y{i}", f"n{i}"],
+        neg_risk=True,
+        fee_type="sports_fees_v2",
+        group_item_title=f"O{i}",
+    )
+
+
+def _dual_snapshot(no_ask_prices: list[str], *, augmented: bool = False) -> Snapshot:
+    markets = [_objective_market(i) for i in range(len(no_ask_prices))]
+    event = Event(
+        id="9",
+        title="Dual event",
+        neg_risk=True,
+        enable_neg_risk=True,
+        neg_risk_augmented=augmented,
+        markets=markets,
+    )
+    books = {f"n{i}": make_book(f"n{i}", asks=[(p, "100")]) for i, p in enumerate(no_ask_prices)}
+    return Snapshot(event=event, books=books)
+
+
+def test_dual_profit_formula() -> None:
+    # 3 outcomes → payoff M-1 = 2; Σ NO = 1.8 < 2 → gross 0.2.
+    p = dual_profit([Decimal("0.6"), Decimal("0.6"), Decimal("0.6")], [ZERO, ZERO, ZERO])
+    assert p.cost == Decimal("1.8")
+    assert p.gross_profit == Decimal("0.2")
+    assert p.net_profit == Decimal("0.2")
+
+
+def test_dual_emits_when_no_basket_underpriced() -> None:
+    snap = _dual_snapshot(["0.6", "0.6", "0.6"])  # Σ NO = 1.8 < 2
+    opps = list(NegRiskDualDetector().detect(snap))
+    assert len(opps) == 1
+    opp = opps[0]
+    assert opp.detector == DetectorKind.NEGRISK_DUAL
+    assert opp.net_profit == Decimal("0.2")
+    assert opp.realizes == "resolution"
+    assert len(opp.legs) == 3
+    assert {leg.token_id for leg in opp.legs} == {"n0", "n1", "n2"}  # NO tokens, not YES
+    assert all(leg.side == "buy" for leg in opp.legs)
+
+
+def test_dual_no_arb_when_sum_ge_m_minus_1() -> None:
+    snap = _dual_snapshot(["0.7", "0.7", "0.7"])  # Σ NO = 2.1 ≥ 2 → no edge
+    assert list(NegRiskDualDetector().detect(snap)) == []
+
+
+def test_dual_works_on_augmented_event() -> None:
+    # The defining YES/NO difference: the dual needs only mutual exclusivity, so it emits on an
+    # augmented event (skip_augmented=False) where the YES basket correctly bails.
+    snap = _dual_snapshot(["0.6", "0.6", "0.6"], augmented=True)
+    assert len(list(NegRiskDualDetector().detect(snap))) == 1
+
+
+def test_dual_depth_walk_captures_multiple_levels() -> None:
+    markets = [_objective_market(i) for i in range(3)]
+    event = make_event(markets, neg_risk=True)
+    # Both NO levels profitable (payoff 2): L1 Σ=1.80<2 chunk 50; L2 Σ=1.89<2 chunk 70 → 120.
+    books = {f"n{i}": make_book(f"n{i}", asks=[("0.60", "50"), ("0.63", "70")]) for i in range(3)}
+    snap = Snapshot(event=event, books=books)
+    opps = list(NegRiskDualDetector().detect(snap))
+    assert len(opps) == 1
+    assert opps[0].executable_size == Decimal(120)
+
+
+def test_dual_refuses_void_prone_legs() -> None:
+    # Void gate (committee CRITICAL): the dual's M-1 floor breaks if a losing leg voids 50-50,
+    # so it must NOT emit when legs resolve on a non-OBJECTIVE (void-prone) source — even though
+    # the same Σ NO < M-1 edge exists. Default make_market is fee-free → fee_type None → STANDARD.
+    markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(3)
+    ]
+    event = make_event(markets, neg_risk=True)
+    books = {f"n{i}": make_book(f"n{i}", asks=[("0.6", "100")]) for i in range(3)}  # Σ NO=1.8<2
+    assert list(NegRiskDualDetector().detect(Snapshot(event=event, books=books))) == []
+
+
+def test_basket_and_dual_both_fire_on_one_event() -> None:
+    # Integration: an event underpriced on BOTH sides (Σ YES < 1 and Σ NO < M-1) yields one
+    # YES-basket opp and one NO-dual opp from the same snapshot, each reading its own books.
+    markets = [_objective_market(i) for i in range(3)]
+    event = make_event(markets, neg_risk=True)
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(3)}  # Σ YES=0.9<1
+    books |= {f"n{i}": make_book(f"n{i}", asks=[("0.60", "100")]) for i in range(3)}  # Σ NO=1.8<2
+    snap = Snapshot(event=event, books=books)
+    kinds = {opp.detector for opp in NegRiskBasketDetector().detect(snap)} | {
+        opp.detector for opp in NegRiskDualDetector().detect(snap)
+    }
+    assert kinds == {DetectorKind.NEGRISK_BASKET, DetectorKind.NEGRISK_DUAL}
+
+
+def test_dual_gas_guard() -> None:
+    base = _dual_snapshot(["0.6", "0.6", "0.6"])  # net 0.2/set, size 100 → total_net 20.00
+    high = Snapshot(event=base.event, books=base.books, gas=Decimal("20.01"))
+    assert list(NegRiskDualDetector().detect(high)) == []
+    low = Snapshot(event=base.event, books=base.books, gas=Decimal("19.99"))
+    assert len(list(NegRiskDualDetector().detect(low))) == 1
+
+
+def test_dual_skips_on_missing_no_book() -> None:
+    snap = _dual_snapshot(["0.6", "0.6", "0.6"])
+    del snap.books["n2"]  # a live outcome with no NO book → can't lock the dual
+    assert list(NegRiskDualDetector().detect(snap)) == []

@@ -230,6 +230,7 @@ class OrderBook(BaseModel):
 class DetectorKind(StrEnum):
     COMPLEMENT = "complement"
     NEGRISK_BASKET = "negrisk_basket"
+    NEGRISK_DUAL = "negrisk_dual"  # buy 1 NO of every outcome (Σ NO < M-1)
     DEPENDENCY = "dependency"
 
 

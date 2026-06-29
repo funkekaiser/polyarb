@@ -104,7 +104,7 @@ New items it surfaced:
 |---|-----|-----|-------|---------------|--------|
 | A1-stale | B | MED | **Stale-closed cross-check removed.** The scanner now fetches books only for live constituents, so a *stale-closed* leg (Gamma says closed but it's still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices` instead. | When a closed leg's resolution is borderline/unknown, fetch its book anyway; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. Defense-in-depth on A3. | open |
 | A1-riskwt | ✶ | MED | **No risk weight for near-resolution baskets.** A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print events. `live/total` legs and "Σ_live implausibly « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; penalize/await-corroborate near-fully-resolved baskets. Pairs with C2/C3. | open |
-| B3 (refined) | B | MED | NO-dual `Σ NO < M−1`. Committee: needs only **mutual exclusivity**, so it must **not** inherit A1's augmented/closed-YES gates; and it's a *coverage* tool with inverted capital economics (ranks below a feasible YES basket). Full design in `docs/HEDGING.md`. | Implement per HEDGING §2 (reuse A1's tradeability/hole filter, not its exhaustiveness gates). | open |
+| B3 (refined) | B | MED | NO-dual `Σ NO < M−1`. Committee: needs only **mutual exclusivity**, so it must **not** inherit A1's augmented gate; and it's a *coverage* tool with inverted capital economics (ranks below a feasible YES basket). Full design in `docs/HEDGING.md`. | Implement per HEDGING §2 (reuse A1's tradeability/hole filter, not its exhaustiveness gates). | **done (2026-06-29)** — `NegRiskDualDetector`, reuses `live_partition(skip_augmented=False)` + `walk_and_size_buy_basket(payoff=M−1)`. A committee caught a **CRITICAL**: the dual's floor is uniquely fragile to a *losing* leg voiding 50-50 (−$0.50 × up to M−1 losers, asymmetric vs the YES basket which *gains* on loser-voids) — so it's **void-gated to OBJECTIVE-resolution legs only** (void-prone events refused). Conservatively keeps the closed-leg gates (safe false-negatives). |
 
 The hedging design (`docs/HEDGING.md`) was corrected per the committee: §5 partial-basket EV
 must use the **normalized** implied prob `p = Σ_S/T` (earns pro-rata share `Σ_S/T` of the slack
@@ -126,12 +126,12 @@ and that A2's `customLiveness>0→AT_RISK` was miscalibrated theater (downgraded
 | A2-void (core) | B,D | HIGH | Pre-resolution void/50-50 detection for **live** legs — no signal in available data (`customLiveness` is dispute-window length, not void prob). | A declared void-prone/category list (needs a live-API survey) or a payoff-haircut policy for held arbs; otherwise accept as a documented residual gated by resolution-risk. | open |
 | §5-partial | B | — | Probabilistic partial-basket mode. **Decision: build it, opt-in, off by default** (Jonathan, 2026-06-29). | Per `docs/HEDGING.md` §5: separate clearly-tagged class, conservative lower-bound EV (`p=Σ_S/T`, residual at NO-ask cost), config flag. Sequenced after the structural work. | approved, not built |
 
-## Focus (next: NegRisk basket)
+## Focus (next: §5 opt-in partial basket, then the risk layer)
 
-A1 (exhaustiveness) and A3 (staleness net) are **done**; A2's detectable part is done and its
-core void risk is documented-open. Remaining basket work, in order: the model-free **NO-dual
-(B3)** (the next *new* strategy — reuse `live_partition(skip_augmented=False)`, see
-`docs/HEDGING.md`), then the **opt-in probabilistic partial basket (§5)**, then the deeper
-risk/ranking layer (**C1–C3**: real AT_RISK assignment, probabilistic risk-adjustment,
-winner's-curse guard) which several A-tier residuals (A1-riskwt, A2-void, A3-quiescence) now
-feed into.
+A1 (exhaustiveness), A3 (staleness net), and **B3 (NO-dual, void-gated)** are **done**; A2's
+detectable part is done and its core void risk is documented-open. Remaining, in order: the
+**opt-in probabilistic partial basket (§5)** (approved — off by default, separate class,
+conservative lower-bound EV; see `docs/HEDGING.md`), then the deeper risk/ranking layer
+(**C1–C3**: real AT_RISK assignment, probabilistic risk-adjustment, winner's-curse guard) which
+several A-tier residuals (A1-riskwt, A2-void, A3-quiescence, the dual's void-gate coverage
+limit) now feed into.

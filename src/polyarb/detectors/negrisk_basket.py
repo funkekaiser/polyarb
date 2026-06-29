@@ -31,6 +31,7 @@ from polyarb.detectors.base import (
 from polyarb.models import BookLevel, DetectorKind, Event, Leg, Market, Opportunity, OrderBook
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import is_crossed
+from polyarb.resolution.risk import ResolutionRisk, classify_market
 
 # A closed constituent's resolved YES price tells us how it resolved: ~0 means it LOST
 # (eliminated — safe to drop from the partition). Anything else — ~1 (it WON, so the event is
@@ -44,6 +45,20 @@ def basket_profit(asks: list[Decimal], fee_rates: list[Decimal]) -> Profit:
     cost = sum(asks, ZERO)
     gross = ONE - cost
     fees = sum((taker_fee(p, ONE, r) for p, r in zip(asks, fee_rates, strict=True)), ZERO)
+    return Profit(cost=cost, gross_profit=gross, fees=fees)
+
+
+def dual_profit(no_asks: list[Decimal], fee_rates: list[Decimal]) -> Profit:
+    """Profit from buying 1 NO of every outcome — the NO-basket dual (B3 / HEDGING §2).
+
+    Across ``M`` mutually-exclusive outcomes exactly ``M-1`` resolve NO, so a set of one NO per
+    outcome pays a guaranteed ``M-1``. Cost = Σ no_asks; payoff = ``M-1`` (M = len(no_asks)).
+    Unlike the YES basket this needs only mutual exclusivity, not full exhaustiveness.
+    """
+    payoff = Decimal(len(no_asks) - 1)
+    cost = sum(no_asks, ZERO)
+    gross = payoff - cost
+    fees = sum((taker_fee(p, ONE, r) for p, r in zip(no_asks, fee_rates, strict=True)), ZERO)
     return Profit(cost=cost, gross_profit=gross, fees=fees)
 
 
@@ -143,6 +158,99 @@ class NegRiskBasketDetector:
         yield make_opportunity(
             detector=self.kind,
             description=f"negrisk basket under: {event.title.strip()} (Σ YES = {profit.cost})",
+            condition_ids=condition_ids,
+            legs=legs,
+            profit=profit,
+            executable_size=size,
+            realizes="resolution",
+            event_id=event.id,
+            days_to_resolution=days,
+            gas=snap.gas,
+        )
+
+
+class NegRiskDualDetector:
+    """NO-basket dual — buy 1 NO of every live outcome; exactly M-1 resolve NO → payoff M-1.
+
+    Arb if ``Σ a_no,i < M-1`` (net of fees + gas). Hedging coverage for when the YES basket is
+    infeasible/edge-eroded (docs/HEDGING.md §2). The floor needs only **mutual exclusivity**
+    (NegRisk guarantees ≤1 YES), so the augmented-skip is opted out via
+    ``live_partition(skip_augmented=False)`` (an added/dropped outcome can't reduce the "M-1 of
+    M lose" count). It still *conservatively* reuses live_partition's other gates (a closed
+    winner/void/unknown leg → skip the whole event): those are safe false-negatives for the
+    dual, so we accept the lost coverage rather than special-case them.
+
+    **Void gate (committee CRITICAL).** Unlike the YES basket, the dual's floor is *not* robust
+    to a 50-50 **void**: a losing leg that voids pays its NO $0.50 instead of $1, a -$0.50 hit —
+    and there are M-1 losers, so the dual is ~(M-1)x more void-exposed, exactly when its edge is
+    thinnest (~1/(M-1) of the YES side). A single void can exceed the whole edge. Since
+    void-proneness isn't otherwise detectable (A2), we only emit where the floor is robust:
+    **every live leg must resolve on a void-resistant (OBJECTIVE) source**; void-prone events
+    are refused. Economics are inverted vs the YES basket (≈M-1 capital for the same edge → low
+    bps), so it ranks below a feasible YES basket.
+    """
+
+    kind: ClassVar[DetectorKind] = DetectorKind.NEGRISK_DUAL
+
+    def detect(self, snap: Snapshot) -> Iterator[Opportunity]:
+        event = snap.event
+        if event is None or not event.is_multi_outcome:
+            return
+        # Mutual exclusivity is enough for the M-1 floor, so don't skip augmented events.
+        live = live_partition(event, skip_augmented=False)
+        if live is None:
+            return
+        # Void gate: the dual's floor breaks under a losing leg's 50-50 void (see class docstring),
+        # so only emit when every live leg resolves on a void-resistant (OBJECTIVE) source.
+        if any(classify_market(m) != ResolutionRisk.OBJECTIVE for m in live):
+            return
+
+        token_ids: list[str] = []
+        outcomes: list[str] = []
+        ask_levels: list[list[BookLevel]] = []
+        fee_rates: list[Decimal] = []
+        condition_ids: list[str] = []
+        for market in live:
+            book: OrderBook | None = snap.books.get(market.no_token_id)
+            if book is None or book.best_ask is None or is_crossed(book):
+                return  # missing/stale NO book on a live outcome → can't lock the dual; skip
+            token_ids.append(market.no_token_id)
+            outcomes.append(market.group_item_title or market.outcomes[0])
+            ask_levels.append(book.asks)
+            fee_rates.append(fee_rate_for(market))
+            condition_ids.append(market.condition_id)
+
+        # Depth-walk every live outcome's NO asks: buy one NO of each per set; exactly M-1 of the
+        # M outcomes resolve NO, so a completed set is worth payoff = M-1. None ⇒ no profitable
+        # depth or doesn't clear gas.
+        payoff = Decimal(len(token_ids) - 1)
+        result = walk_and_size_buy_basket(ask_levels, fee_rates, snap.gas, payoff=payoff)
+        if result is None:
+            return
+        size, leg_costs, profit = result
+
+        legs = [
+            Leg(
+                token_id=token_ids[i],
+                side="buy",
+                price=leg_costs[i] / size,
+                size=size,
+                outcome=f"No: {outcomes[i]}",
+            )
+            for i in range(len(token_ids))
+        ]
+
+        days = next(
+            (
+                snap.days_to_resolution[m.condition_id]
+                for m in event.markets
+                if m.condition_id in snap.days_to_resolution
+            ),
+            None,
+        )
+        yield make_opportunity(
+            detector=self.kind,
+            description=f"negrisk NO-dual: {event.title.strip()} (Σ NO={profit.cost})",
             condition_ids=condition_ids,
             legs=legs,
             profit=profit,
