@@ -157,6 +157,6 @@ The fingerprint captures settlement source, reference index/feed, cutoff time, a
    - **Ladder generator:** group by `underlying_key` + `comparator`, drop non-`cumulative_touch` where required, sort by `bound`, emit adjacent rungs.
    - **DAG generator:** load the declared sports/political edge sets, compute transitive closure, match nodes to live markets by `underlying_key` + `bound`.
 3. `detectors/dependency.py` checks each edge for the §1 violation `price(A) > price(B)`, pulls live books, and (via `pricing/`) computes net-of-fee profit and executable size.
-4. `engine/filters.py` applies the §6 fingerprint gate, the resolution-risk gate, the min-profit / min-notional thresholds, and dedupe before ranking.
+4. The §6 fingerprint gate is enforced inside `resolution/relations.py` at generation time for ladder- and DAG-generated relations; hand-declared `add_relation()` relations do not yet enforce it (tracked: STRATEGY_BACKLOG D1). `engine/filters.py` applies the resolution-risk gate, the min-profit / min-notional thresholds, and dedupe before ranking.
 
 Start the live scan with **Priority 1 and 2 only**, confirm the false-positive rate is ~zero on recorded fixtures, then enable the Priority 3 DAG, and only then Priority 4.

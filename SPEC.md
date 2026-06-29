@@ -45,7 +45,7 @@ The three structural edges to detect (math specified below):
 - **`httpx`** (async) for Gamma/Data/CLOB REST; **`websockets`** for the CLOB feed.
 - **`pydantic` v2** for typed domain models; **`pydantic-settings`** for config.
 - **`polymarket-client`** (the `py-sdk` unified SDK; replaces the now-archived `py-clob-client`) — imported **only** inside the execution module, for order building/signing.
-- **SQLite** (via `SQLModel` or stdlib `sqlite3`) to persist detected opportunities → enables backtest/replay and hit-rate analytics. (Make the storage layer an interface so Postgres is a drop-in later.)
+- **SQLite** (via stdlib `sqlite3`) to persist detected opportunities → enables backtest/replay and hit-rate analytics. (Make the storage layer an interface so Postgres is a drop-in later.)
 - **`structlog`** for structured JSON logging.
 - **`pytest`** + **`hypothesis`** (property-based tests for the invariant math).
 - **`ruff`** (lint+format) and **`mypy`** (or pyright) — strict.
@@ -114,6 +114,8 @@ polyarb/
     __init__.py
     config.py                  # pydantic-settings
     models.py                  # Event, Market, Outcome, OrderBook, Opportunity
+    logging_setup.py           # structlog configuration and JSON log setup
+    recording.py               # live read-only sample capture → test fixtures
     clients/
       gamma.py                 # discovery: events/markets/negRisk flags (public)
       clob.py                  # public reads: order books, prices, midpoints, fees, tick/min-size
@@ -136,12 +138,14 @@ polyarb/
       scanner.py               # fetch -> detect -> filter -> rank -> emit (async loop)
       filters.py               # fee/size/resolution/dedupe
       ranking.py               # sort by net_profit, annualized, risk
+      backtest.py              # summarize stored opportunity history
+      metrics.py               # optional Prometheus /metrics endpoint
     sinks/
       store.py                 # SQLite persistence (interface + impl)
       notify.py                # webhook/ntfy/discord (pluggable, optional)
     execution/                 # GATED — default OFF
-      guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm
-      executor.py              # multi-leg submission via polymarket-client (only behind guard)
+      guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm  # Phase 5 — not yet created
+      executor.py              # multi-leg submission via polymarket-client (only behind guard)  # Phase 5 — not yet created
     cli.py                     # `scan` (dry-run default), `backtest`, `replay`, `record`
   tests/
     fixtures/                  # recorded API JSON
@@ -169,7 +173,7 @@ polyarb/
 - Implement `gamma`, `clob` (public reads only), `data`, `ws`, `ratelimit`. Pydantic models for Event/Market/Outcome/OrderBook. Resolve the condition_id ↔ token_id identifier model correctly.
 - `scripts/record_fixtures.py` captures real samples; commit a representative fixture set (include at least one binary market, one multi-outcome NegRisk event, and one fee-free + one fee'd category).
 - Offline tests parse fixtures into models.
-- **DoD:** `uv run python -m polyarb.cli record` pulls live read-only data; client tests pass offline. **Gate.**
+- **DoD:** `uv run polyarb record` pulls live read-only data; client tests pass offline. **Gate.**
 
 **Phase 2 — Detectors, pricing, property tests.**
 - Implement `complement`, `negrisk_basket`, `dependency`; `pricing/fees.py`, `pricing/sizing.py`; `resolution/relations.py` seed graph.
@@ -190,60 +194,3 @@ polyarb/
 - `execution/guard.py`: refuses unless `EXECUTION_ENABLED=true`, enforces a max-notional-per-trade cap and a global kill-switch, and requires an interactive `yes` confirmation per trade. `execution/executor.py`: multi-leg submission via `polymarket-client` (the unified `py-sdk`; `py-clob-client` is archived), callable **only** through the guard, with FOK/IOC order types to minimize leg risk, and a `--paper` mode note (since there's no testnet, real paper = tiny live orders).
 - Loud warnings in code + README. The default `scan` path must remain execution-free.
 - **DoD:** with `EXECUTION_ENABLED` unset, the executor cannot run and tests assert that. Leave it disabled. **Gate — then we stop and decide together whether to ever turn it on.**
-
----
-
-## Suggested `CLAUDE.md` (agent should create this in Phase 0)
-
-```
-# polyarb — working notes for Claude Code
-
-## What this is
-Read-only Polymarket structural-arbitrage scanner. Detection is the product.
-Execution is a separate, default-OFF module. See SPEC.md for the math and phases.
-
-## Hard rules
-- Read-only by default. No order is ever signed/posted/cancelled and no private
-  key is touched unless EXECUTION_ENABLED=true AND a human confirms at runtime.
-- No secrets in the repo. .env.example holds placeholders only.
-- Verify API endpoints/fields/limits against live docs (docs.polymarket.com,
-  py-sdk README; py-clob-client is archived) — never from memory. Keep docs/API_NOTES.md current.
-- Respect per-service rate limits; exponential backoff on 429.
-- Resolution risk is a first-class filter.
-- One phase at a time: lint + types + tests + commit, then stop for review.
-
-## Stack
-Python 3.12 / uv / httpx / websockets / pydantic v2 / polymarket-client (exec only)
-/ SQLite / structlog / pytest + hypothesis / ruff + mypy / Docker / GH Actions.
-
-## Commands
-uv run python -m polyarb.cli scan --dry-run    # default, read-only
-uv run python -m polyarb.cli record            # capture fixtures
-uv run python -m polyarb.cli backtest          # analyze stored opps
-uv run pytest && uv run ruff check && uv run mypy src
-```
-
-## Suggested `.env.example`
-
-```
-# --- Read-only scanning needs NONE of the trading creds below ---
-LOG_LEVEL=INFO
-MIN_PROFIT_BPS=30
-MIN_NOTIONAL_USDC=50
-EXCLUDE_AT_RISK_RESOLUTION=true
-SCAN_INTERVAL_SECONDS=5
-NOTIFIER=none            # none | webhook | ntfy | discord | telegram
-NOTIFIER_URL=
-
-# --- Execution module (leave disabled) ---
-EXECUTION_ENABLED=false
-MAX_TRADE_NOTIONAL_USDC=0
-# POLYMARKET_PRIVATE_KEY=     # never commit a real value; set in env only when enabling execution
-# POLYMARKET_FUNDER_ADDRESS=
-```
-
----
-
-## One operational note (from Jonathan, not the agent)
-
-The scanner is read-only, so running the detector itself is low-risk infrastructure. Whether to ever enable execution — and the ToS, jurisdiction (Vienna vs California), and tax questions that come with actually trading — is my call to make separately, with the appropriate professional advice. Build the detector to be excellent; treat execution as a deliberately separate, deliberately-off decision. This file is engineering guidance, not financial advice.

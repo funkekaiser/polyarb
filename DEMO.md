@@ -141,7 +141,7 @@ src/polyarb/
 ## 7. Correctness — why you can trust the numbers
 
 ```bash
-PYTHONPATH=src UV_NO_SYNC=1 uv run pytest        # 128 tests, fully offline (committed JSON fixtures)
+PYTHONPATH=src UV_NO_SYNC=1 uv run pytest        # fully offline (committed JSON fixtures)
 PYTHONPATH=src UV_NO_SYNC=1 uv run ruff check . && PYTHONPATH=src uv run mypy src
 ```
 

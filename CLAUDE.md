@@ -31,6 +31,8 @@ it.
   declared DAGs, tag schema, seed relations, resolution-fingerprint gate). Mostly Phase 3.
 - **`docs/TESTING.md`** — how correctness is defined, the test-suite map, the adversarial
   bug-hunt findings + fixes, known limitations, and where bugs are likely to hide.
+- **`docs/STRATEGY_BACKLOG.md`** — the strategy/worklist of committee findings not yet implemented.
+- **`DEMO.md`** — the guided, user-facing tour of the working commands.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
 it's an API fact). Don't copy it here.
@@ -158,14 +160,14 @@ Pipeline, end to end: **discover → read books → detect → filter → rank �
 - `detectors/` — each implements the `base.py` Detector protocol → `Iterable[Opportunity]`:
   `complement`, `negrisk_basket`, `dependency`, plus a `crossvenue` stub
   (`NotImplementedError` + `resolution_equivalence_check()`). Profit math is in
-  SPEC.md §"The math" and must be property-tested. *[Phase 2.]*
+  SPEC.md §"The math" and must be property-tested. *[Phase 2 — built.]*
 - `pricing/` — `fees.py` (net-of-fees from live fee params) and `sizing.py` (executable size
-  from cumulative book depth; reject opps below `MIN_NOTIONAL`). *[Phase 2.]*
+  from cumulative book depth; reject opps below `MIN_NOTIONAL`). *[Phase 2 — built.]*
 - `resolution/` — `risk.py` (resolution-source → risk tag) and `relations.py` (hand-declared
-  dependency graph; adding a relation is a one-liner; never inferred from text). *[Phase 2.]*
+  dependency graph; adding a relation is a one-liner; never inferred from text). *[Phase 2 — built.]*
 - `engine/` — `scanner.py` async fetch→detect→filter→rank→emit loop; `filters.py`;
-  `ranking.py`. *[Phase 3.]*
-- `sinks/` — `store.py` (SQLite behind an interface) and `notify.py` (optional). *[Phase 3.]*
+  `ranking.py`. *[Phase 3 — built.]*
+- `sinks/` — `store.py` (SQLite behind an interface) and `notify.py` (optional). *[Phase 3 — built.]*
 - `execution/` — **GATED, default OFF.** `guard.py` (EXECUTION_ENABLED + max-notional cap +
   kill-switch + per-trade confirm); `executor.py` (multi-leg via `polymarket-client`, only
   through the guard). Never on the default scan path. *[Phase 5.]*

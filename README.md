@@ -6,9 +6,9 @@ scores them net-of-fees, ranks by risk-adjusted/annualized return, persists, and
 
 **Detection is the product.** Execution is a separate, opt-in, default-OFF module.
 
-> Status: Phase 0 (bootstrap) complete. See `SPEC.md` for the full design, the math, and
-> the phased plan; `docs/API_NOTES.md` for verified live-API facts; `CLAUDE.md` for the
-> working rules.
+> Status: Phases 0–4 complete; Phase 5 (execution) not started. See `SPEC.md` for the full
+> design, the math, and the phased plan; `docs/API_NOTES.md` for verified live-API facts;
+> `CLAUDE.md` for the working rules.
 
 ## Structural edges detected
 
@@ -33,13 +33,17 @@ uv run pytest                 # offline test suite
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
 ```
 
-## Planned commands (later phases)
+## Commands
+
+These all ship and work today (read-only; no signing client, no credentials needed):
 
 ```bash
 uv run polyarb scan --dry-run   # default, read-only ranked opportunity feed
 uv run polyarb record           # capture live samples → test fixtures
 uv run polyarb backtest         # analyze stored opportunities
 ```
+
+Order placement (Phase 5) is not yet built.
 
 ## Run with Docker
 

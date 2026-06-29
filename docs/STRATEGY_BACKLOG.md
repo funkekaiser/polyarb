@@ -92,7 +92,7 @@ Addressed in this pass (test/robustness, committed): discriminating per-leg-fee 
 tests (walk + both detectors), exact-gas-boundary test, `walk_buy_legs([])` returns zero,
 and the corrected `TESTING.md §5` size note (optimistic-ceiling caveat).
 
-## Focus (next, after complement)
+## Focus (next: NegRisk basket)
 
 B1/B2 are now done across all three detectors. The next strategy to perfect is the **NegRisk
 basket** (SPEC's highest-value strategy, where A1/A2/A3 converge) — make its "guaranteed $1"
