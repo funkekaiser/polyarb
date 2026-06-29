@@ -74,6 +74,17 @@ subagents do the volume.
   (`ruff` + `mypy` + `pytest`) or had an adversarial reviewer (often a separate subagent) try
   to break it. This repo earns correctness through adversarial verification (docs/TESTING.md);
   hold delegated work to that bar. The final correctness call is always yours.
+- **Convene a review panel for high-stakes soundness calls.** The gate proves the code *runs*;
+  it cannot prove a *strategy* is sound. For anything load-bearing on the profit math, the
+  detectors, the fee/sizing/gas model, or any new arb identity, fan out a **panel of
+  independent Opus reviewers, each with a distinct adversarial lens** (e.g. profit-identity
+  math · market-microstructure/execution realism · numerical-implementation fidelity), run
+  them in parallel, then **you synthesize** their findings into one ranked critique and feed
+  the durable strategy-level concerns into `docs/STRATEGY_BACKLOG.md`. This is the
+  "statistician committee" pattern that has already surfaced real issues (see TESTING.md /
+  STRATEGY_BACKLOG.md). Reach for it when correctness is statistical rather than mechanical and
+  a single reviewer's blind spots are unacceptable — not for routine diffs. Diversity of lens
+  beats more reviewers of the same lens; pair it with the per-finding adversarial verify above.
 - **Caveat:** subagents sharing this repo's venv can re-trigger the macOS `.pth` hidden-flag
   issue (see "venv" below). Tell file-only agents not to run `uv sync`/`uv run`, or give a
   mutating agent `isolation: "worktree"`.

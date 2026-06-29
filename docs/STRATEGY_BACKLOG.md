@@ -20,7 +20,7 @@ Severity is the committee's; "strategy" is which detector(s) it touches
 
 | # | Str | Sev | Issue | Fix direction | Status |
 |---|-----|-----|-------|---------------|--------|
-| B1 | B,C,D | HIGH | **Sizing never walks past top-of-book** — each detector passes the *best* price as the depth limit, so `executable_size` = thinnest leg's *top level only*. Systematically under-sizes and drops real basket arbs. (`TESTING.md §5`'s "upper bound" note is backwards — it's a conservative lower bound.) | Walk legs jointly; accumulate size while combined VWAP still clears `MIN_PROFIT_BPS`; recompute net/bps from VWAP. | **complement: done (2026-06-29)** — joint depth-walk (`walk_buy_legs`/`walk_sell_legs` in `pricing/sizing.py`) captures all profitable depth at VWAP economics; basket/dependency B1 still open (can reuse `walk_buy_legs`) |
+| B1 | B,C,D | HIGH | **Sizing never walks past top-of-book** — each detector passes the *best* price as the depth limit, so `executable_size` = thinnest leg's *top level only*. Systematically under-sizes and drops real basket arbs. (`TESTING.md §5`'s "upper bound" note is backwards — it's a conservative lower bound.) | Walk legs jointly; accumulate size while combined VWAP still clears `MIN_PROFIT_BPS`; recompute net/bps from VWAP. | **done (2026-06-29)** — all three detectors now joint-depth-walk via `walk_buy_legs`/`walk_sell_legs` (per-leg fee rates) with crossed-book + gas-realizability guards; verified by a 3-seat Opus panel (no correctness bugs). *Caveat raised: the full-walk size assumes atomic multi-leg fills — see C1-atomicity below.* |
 | B2 | ✶ | HIGH | **Gas is a no-op and mis-modeled.** `gas_estimate=0` by default → "net of gas" does nothing. And gas is folded **per-set** then gated per-set, so a real `1000·$0.02 − $5` arb is rejected. | Nonzero default; gate/rank on total economics `size·(gross−fees) − gas`, not per-set. | **done (2026-06-29)** — gas modeled per-execution; gate/rank on total $ via `total_net_profit` + gas-adjusted bps |
 | B3 | B | MED | **Overpriced-basket dual undetected** — `Σ NO < N−1` (buy every NO) is a structural edge we miss entirely. | Add the dual + property test (same exhaustiveness precondition as A1). | open |
 
@@ -70,8 +70,32 @@ D4/B2/B1, a 2-seat Opus committee confirmed the **identity + walk math is correc
 | C-defer-4 | NegRisk merge routing + higher gas | Phase-5 execution only | Route merge via `NegRiskAdapter`; higher per-exec gas constant for `negRisk` |
 | C-defer-5 | `min_order_size`/tick not enforced in the walk (D5); 1e-28 VWAP rounding | Negligible / venue-min concern | Floor to `min_order_size`; thread exact walk totals if ever needed |
 
+## Basket/dependency B1 — panel re-check (2026-06-29, second hardening pass)
+
+After bringing negrisk_basket + dependency to complement's bar (B1 done), a 3-seat Opus panel
+(profit-identity math · execution realism · numerical fidelity) plus an adversarial code
+reviewer audited the change. **Verdict: the depth-walk math is faithful and the identities are
+sound; no correctness bugs.** The panel strongly **corroborated the existing Tier-A worklist**
+as the real remaining risk (A1 exhaustiveness, A2 void/50-50, A3 staleness) and refined a few
+items. New/refined entries:
+
+| # | Str | Sev | Issue | Fix direction | Status |
+|---|-----|-----|-------|---------------|--------|
+| B2′ | ✶ | MED-HIGH | **Gas is one fixed charge, but a basket is N taker orders + merge/redeem.** A single `snap.gas` under-charges high-N baskets — exactly the highest-value opps — biasing toward false positives as N grows. (Refines the now-done B2.) | `gas = base + per_leg·N`; thread leg-count into the per-execution estimate. | open |
+| C1-atomicity | ✶ | HIGH | **Full-walk size assumes an atomic multi-leg fill.** Book-mechanical leg independence ≠ execution independence: fills are sequential, and between lifting leg 1 and leg N the other legs move/vanish (adverse selection preferentially completes the *bad* legs → partial unhedged position). Full-walk size is an **optimistic ceiling**, worse as N and levels grow. | Report a conservative `top_level_size` alongside the walk and filter/rank on it; or apply a survival haircut growing in N/levels. Couples with A3. | open |
+| M3-feefloor | B,D | MED | **Parabolic taker fee `C·r·p·(1−p)` → 0 at p→0/1**, where basket/dependency longshot legs live. If the live schedule has a per-order floor/minimum/round-up, the model under-charges exactly those legs and inflates their edge. | Verify against `docs/API_NOTES.md`; if a floor exists, add it per leg. | open |
+| D3′ | B,D | MED | **Multi-leg horizon confirmed wrong**: dependency annualizes off B's horizon (fallback A), basket off the *first* known leg — should be `max(legs)` (capital locked until all required legs resolve). (Sharpens D3.) | Use `max(days)` across the legs whose resolution is required for the guaranteed payoff. | open |
+| F2-proptest | ✶ | LOW | **Pure profit fns (`*_profit`) are no longer on the detector runtime path** (detectors compute inline via the walk); only example-tested. | Property-test `walk_buy_legs`/`walk_sell_legs` directly (monotone marginal, prefix-optimality, fee ≥ 0). | open |
+| D6 | C | LOW | **`walk_sell_legs` takes a scalar fee only** (asymmetric with `walk_buy_legs`); latent fee error if reused for cross-market sells. | Accept `Decimal | Sequence[Decimal]` + reuse `_per_leg_rates`. | open |
+
+Addressed in this pass (test/robustness, committed): discriminating per-leg-fee alignment
+tests (walk + both detectors), exact-gas-boundary test, `walk_buy_legs([])` returns zero,
+and the corrected `TESTING.md §5` size note (optimistic-ceiling caveat).
+
 ## Focus (next, after complement)
 
-The next strategy to perfect is the **NegRisk basket** (SPEC's highest-value strategy, where
-A1/A2/A3/B1/B2 converge) — make its "guaranteed $1" *actually* guaranteed (exhaustiveness +
-void handling) before touching dependency.
+B1/B2 are now done across all three detectors. The next strategy to perfect is the **NegRisk
+basket** (SPEC's highest-value strategy, where A1/A2/A3 converge) — make its "guaranteed $1"
+*actually* guaranteed (**exhaustiveness A1 + void/50-50 A2 + staleness A3**) before touching
+dependency. The panel rates A1 (exhaustiveness) the most dangerous open correctness gap: an
+unlisted "other/none" outcome turns a "free" basket into a guaranteed loss.
