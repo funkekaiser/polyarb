@@ -91,7 +91,15 @@ def live_partition(event: Event, *, skip_augmented: bool = True) -> list[Market]
     live: list[Market] = []
     for market in event.markets:
         if market.closed:
-            yes_price = market.outcome_prices[0] if market.outcome_prices else None
+            # D2-residual: read the YES resolved price at yes_index, not always index 0.
+            # A reversed-outcome market (["No","Yes"]) stores YES at index 1; using index 0
+            # would read the NO price, misclassifying the outcome as a winner or eliminating it
+            # wrongly. Guard the list length in case outcome_prices is empty.
+            yes_price = (
+                market.outcome_prices[market.yes_index]
+                if len(market.outcome_prices) > market.yes_index
+                else None
+            )
             if yes_price is not None and yes_price <= _RESOLVED_NO_MAX:
                 continue  # resolved NO → eliminated outcome, drops out of the partition
             return None  # winner / void / unknown closed price → can't prove a safe drop
@@ -112,6 +120,9 @@ class NegRiskBasketDetector:
         live = live_partition(event)
         if live is None:
             return
+        # A1-riskwt: total_count = all binary markets in the event (including eliminated ones);
+        # live_count = binary markets still in the live partition after eliminations are dropped.
+        total_count = sum(1 for m in event.markets if m.is_binary)
 
         token_ids: list[str] = []
         outcomes: list[str] = []
@@ -123,7 +134,16 @@ class NegRiskBasketDetector:
             if book is None or book.best_ask is None or is_crossed(book):
                 return  # missing/stale book on a live outcome → partition incomplete; skip
             token_ids.append(market.yes_token_id)
-            outcomes.append(market.group_item_title or market.outcomes[0])
+            # D2-residual: use yes_index so reversed-outcome markets ("No","Yes") get the
+            # correct outcome label; guard length and fall back to "Yes" if out of range.
+            outcomes.append(
+                market.group_item_title
+                or (
+                    market.outcomes[market.yes_index]
+                    if len(market.outcomes) > market.yes_index
+                    else "Yes"
+                )
+            )
             ask_levels.append(book.asks)
             fee_rates.append(fee_rate_for(market))
             condition_ids.append(market.condition_id)
@@ -160,6 +180,8 @@ class NegRiskBasketDetector:
             event_id=event.id,
             days_by_condition=snap.days_to_resolution,
             gas=gas,
+            live_count=len(live),
+            total_count=total_count,
         )
 
 
@@ -200,6 +222,8 @@ class NegRiskDualDetector:
         # so only emit when every live leg resolves on a void-resistant (OBJECTIVE) source.
         if any(classify_market(m) != ResolutionRisk.OBJECTIVE for m in live):
             return
+        # A1-riskwt: total_count = all binary markets in the event (including eliminated ones).
+        total_count = sum(1 for m in event.markets if m.is_binary)
 
         token_ids: list[str] = []
         outcomes: list[str] = []
@@ -211,7 +235,16 @@ class NegRiskDualDetector:
             if book is None or book.best_ask is None or is_crossed(book):
                 return  # missing/stale NO book on a live outcome → can't lock the dual; skip
             token_ids.append(market.no_token_id)
-            outcomes.append(market.group_item_title or market.outcomes[0])
+            # D2-residual: use yes_index so reversed-outcome markets ("No","Yes") get the
+            # correct outcome label; guard length and fall back to "Yes" if out of range.
+            outcomes.append(
+                market.group_item_title
+                or (
+                    market.outcomes[market.yes_index]
+                    if len(market.outcomes) > market.yes_index
+                    else "Yes"
+                )
+            )
             ask_levels.append(book.asks)
             fee_rates.append(fee_rate_for(market))
             condition_ids.append(market.condition_id)
@@ -249,4 +282,6 @@ class NegRiskDualDetector:
             event_id=event.id,
             days_by_condition=snap.days_to_resolution,
             gas=gas,
+            live_count=len(live),
+            total_count=total_count,
         )

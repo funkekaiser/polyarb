@@ -80,6 +80,8 @@ def make_opportunity(
     days_by_condition: Mapping[str, int] | None = None,
     conservative_size: Decimal | None = None,
     gas: Decimal = ZERO,
+    live_count: int | None = None,
+    total_count: int | None = None,
 ) -> Opportunity:
     """Assemble an Opportunity, computing gas-adjusted bps and annualized return.
 
@@ -128,6 +130,8 @@ def make_opportunity(
         realizes=realizes,
         days_to_resolution=days_to_resolution,
         annualized=annualized,
+        live_count=live_count,
+        total_count=total_count,
     )
 
 

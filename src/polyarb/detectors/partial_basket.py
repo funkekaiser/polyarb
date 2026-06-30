@@ -67,7 +67,16 @@ class PartialBasketDetector:
             book = snap.books.get(market.yes_token_id)
             if book is not None and book.best_ask is not None and not is_crossed(book):
                 token_ids.append(market.yes_token_id)
-                outcomes.append(market.group_item_title or market.outcomes[0])
+                # D2-residual: use yes_index so reversed-outcome markets ("No","Yes") get the
+                # correct outcome label; guard length and fall back to "Yes" if out of range.
+                outcomes.append(
+                    market.group_item_title
+                    or (
+                        market.outcomes[market.yes_index]
+                        if len(market.outcomes) > market.yes_index
+                        else "Yes"
+                    )
+                )
                 ask_levels.append(book.asks)
                 fee_rates.append(fee_rate_for(market))
                 condition_ids.append(market.condition_id)

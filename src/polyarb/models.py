@@ -129,6 +129,26 @@ class Market(BaseModel):
         return self.clob_token_ids[1]
 
     @property
+    def yes_index(self) -> int:
+        """Index of the YES outcome in ``outcomes`` / ``outcome_prices``.
+
+        Canonical markets encode outcomes as ``["Yes", "No"]`` — YES is at index 0.
+        Some Polymarket markets arrive in reversed order ``["No", "Yes"]`` — YES is at index 1.
+        Falls back to 0 for empty, non-binary, or non-Yes-No outcome lists.
+
+        Note: ``clob_token_ids[0]`` is *always* the YES token regardless of ``outcomes`` order.
+        This property only affects which element of ``outcomes`` / ``outcome_prices`` holds the
+        YES label / YES resolved price.
+        """
+        if (
+            len(self.outcomes) >= 2
+            and self.outcomes[0].lower() == "no"
+            and self.outcomes[1].lower() == "yes"
+        ):
+            return 1
+        return 0
+
+    @property
     def is_fee_free(self) -> bool:
         """True when no taker fee applies (e.g. geopolitics/world events)."""
         return not self.fees_enabled or self.fee_type is None or self.fee_rate in (None, Decimal(0))
@@ -287,6 +307,11 @@ class Opportunity(BaseModel):
     days_to_resolution: int | None = None
     annualized: Decimal | None = None
     resolution_risk: str | None = None
+    # A1-riskwt: live legs in the basket vs total binary constituent markets in the event (before
+    # eliminations). Populated by NegRisk detectors; None for all other detector kinds. Defaults
+    # None so every existing construction and the SQLite payload round-trip are unaffected.
+    live_count: int | None = None
+    total_count: int | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

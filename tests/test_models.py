@@ -115,3 +115,77 @@ def test_market_uma_resolution_statuses_parsed() -> None:
     assert uma({"umaResolutionStatuses": "[]"}) == []
     assert uma({}) == []  # absent
     assert uma({"umaResolutionStatuses": None}) == []  # null
+
+
+def test_market_yes_index_canonical_is_zero() -> None:
+    """D2-residual: canonical outcomes ["Yes","No"] → yes_index=0."""
+    m = Market.model_validate(
+        {"id": "1", "conditionId": "0x1", "question": "q", "outcomes": '["Yes","No"]'}
+    )
+    assert m.yes_index == 0
+
+
+def test_market_yes_index_reversed_is_one() -> None:
+    """D2-residual: reversed outcomes ["No","Yes"] → yes_index=1."""
+    m = Market.model_validate(
+        {"id": "1", "conditionId": "0x1", "question": "q", "outcomes": '["No","Yes"]'}
+    )
+    assert m.yes_index == 1
+
+
+def test_market_yes_index_empty_or_other_falls_back_to_zero() -> None:
+    """D2-residual: empty and non-Yes-No outcome lists → yes_index=0 (safe fallback)."""
+    base = {"id": "1", "conditionId": "0x1", "question": "q"}
+    assert Market.model_validate(base).yes_index == 0  # empty outcomes → 0
+    m_other = Market.model_validate({**base, "outcomes": '["Maybe","Dunno"]'})
+    assert m_other.yes_index == 0  # non-Yes-No → 0
+
+
+def test_opportunity_live_count_total_count_default_none() -> None:
+    """A1-riskwt: live_count/total_count default None; existing Opportunity construction ok."""
+    from decimal import Decimal
+
+    from polyarb.models import DetectorKind, Opportunity
+
+    opp = Opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="test",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal("0.90"),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal("0.10"),
+        net_profit_bps=Decimal("100"),
+        executable_size=Decimal(100),
+        realizes="resolution",
+    )
+    assert opp.live_count is None
+    assert opp.total_count is None
+
+
+def test_opportunity_live_count_total_count_set() -> None:
+    """A1-riskwt: live_count/total_count are stored and retrieved correctly."""
+    from decimal import Decimal
+
+    from polyarb.models import DetectorKind, Opportunity
+
+    opp = Opportunity(
+        detector=DetectorKind.NEGRISK_BASKET,
+        description="test",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal("0.90"),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal("0.10"),
+        net_profit_bps=Decimal("100"),
+        executable_size=Decimal(100),
+        realizes="resolution",
+        live_count=3,
+        total_count=5,
+    )
+    assert opp.live_count == 3
+    assert opp.total_count == 5
