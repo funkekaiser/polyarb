@@ -47,6 +47,26 @@ home per item — no duplicate prose). Awaiting only a judgment call:
 - **C5** — folded into **C3** (rank by absolute net $).
 - **C4** — folded into **E1** (the realized-outcome ledger is the mechanism; backtest upper-bound labelling happens there).
 
+## Strategy direction — small-edge tier (DEFERRED 2026-06-30)
+
+Jonathan's instinct: as a small player, chase *volume of small REAL edges* rather than compete
+for big ones; the enemy is false positives, not size (filter on reality, rank on size). Sound
+in principle — but a **live recon (gasless, thresholds=1, 600 mkts, 15 passes)** showed it's
+premature *now*:
+
+- The **instant** small edges needed for "$1/min" (complement merge/split) **don't exist** —
+  books are spread-locked at ±~10 bps (no complement arb on the whole board).
+- The small edges that *do* exist are **held-to-resolution baskets**: ~$22 notional, ~40 bps,
+  **~184 days** to resolution → annualized **~0.8%/yr** with resolution risk. Junk capital
+  efficiency; the `$50 MIN_NOTIONAL` + annualized-aware rank already (correctly) filter them out.
+
+**Revisit only when the enablers exist:** (a) **websocket streaming** (D-ws) to catch *instant*
+small transients polling misses; (b) **false-positive hardening** so a penny-edge is trustworthy
+— A3-quiescence (#180 corrupt 0.01/0.99 pattern), A1-stale, per-leg **min-order-size enforcement
+(D5)**, dispute/void gating; (c) **gas model confirmed** (gasless relayer ⟹ ~$0; B2′); (d)
+eventually **automated execution** (Phase 5) — $1/min can't be hand-fired. Until then: stay on
+the sensible/"big" tier. (Memory: small-edge-strategy.)
+
 ---
 
 ## Open — Tier A: is the "guaranteed" money really safe?
