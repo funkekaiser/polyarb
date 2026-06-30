@@ -63,11 +63,48 @@ token bucket + backoff defensively (Cloudflare can still 429).
   Crypto 0.07 · Sports 0.03 · Finance/Politics/Tech/Mentions 0.04 ·
   Economics/Culture/Weather/Other 0.05 · **Geopolitics & world events 0 (fee-free)**.
 - Per-market fee params come directly on the Gamma market object: `feesEnabled` (bool),
-  `feeType` (e.g. `crypto_fees_v2`, or `null` for fee-free), and `feeSchedule.rate` (the
-  taker rate). Fee-free markets have `feesEnabled:false`, `feeType:null`, `feeSchedule:null`.
-  Computed fees are rounded to 5 dp; <0.00001 USDC rounds to zero.
+  `feeType` (e.g. `crypto_fees_v2`, `culture_fees`, `sports_fees_v2`, `general_fees`, or
+  `null` for fee-free), and `feeSchedule` (object or null). Fee-free markets have
+  `feesEnabled:false`, `feeType:null`, `feeSchedule:null`.
+- **Full `feeSchedule` shape** (verified 2026-06-30 against live Gamma `/markets` across
+  crypto/sports/culture/general categories — 20 markets sampled):
+
+  ```json
+  {
+    "exponent": 1,
+    "rate": 0.07,
+    "takerOnly": true,
+    "rebateRate": 0.25
+  }
+  ```
+
+  `exponent: 1` confirms the formula is `p^1 × (1-p)^1` (pure parabolic, as implemented).
+  `takerOnly: true` confirms makers pay zero. `rebateRate` is a maker-side rebate (does not
+  affect taker fee). **No `min`, `floor`, `minimum`, or equivalent field exists.**
+  Only `rate` is surfaced as `Market.fee_rate`; the others are informational.
+- Computed fees are rounded to 5 dp; <0.00001 USDC rounds to zero.
 - Implication for `MIN_PROFIT_BPS`: threshold should be lower for fee-free categories,
   higher for fee'd ones — derive per market from live params, per SPEC.
+
+### M3-feefloor investigation (2026-06-30) — CLOSED: no floor found
+
+Backlog item M3-feefloor raised concern that a per-order fee minimum would make the
+parabolic model understate fees on longshot legs (p → 0/1), producing false positives.
+
+**Verification method:** live read-only recon via `GET /markets?limit=20` on the Gamma API
+(no auth, no order placement). Inspected `feesEnabled`, `feeType`, and the full `feeSchedule`
+object for all 4 fee-type patterns present in the sample (crypto 0.07, sports 0.03, culture
+0.05, general 0.05).
+
+**Finding:** the `feeSchedule` object has exactly four fields (`exponent`, `rate`,
+`takerOnly`, `rebateRate`). No `min`, `floor`, `minimum`, or any analogous field was present
+in any sampled market. The formula `C·r·p·(1−p)` (with `exponent=1`) is the complete taker
+cost; fee approaching zero at the price extremes is correct, not a modeling gap.
+
+**Decision:** no code change to `taker_fee`. A pinning test (`test_m3_no_fee_floor_at_longshot_prices`
+in `tests/test_fees.py`) locks the intentional behavior and serves as a trip-wire if Polymarket
+later introduces a floor. Re-investigate if the `feeSchedule` schema gains new fields or if
+Polymarket documentation explicitly describes a per-order minimum.
 
 ## NegRisk (multi-outcome, mutually-exclusive events)
 

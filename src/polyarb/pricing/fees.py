@@ -8,6 +8,12 @@ where ``C`` = shares traded and ``p`` = the share price in [0, 1]. The fee is pa
 zero at the price extremes, maximal at p=0.50. Fee-free categories (e.g. geopolitics) have
 ``feeRate = 0``. Per-market ``feeRate`` lives on the Gamma market object (``feeSchedule.rate``,
 surfaced as ``Market.fee_rate``).
+
+M3-feefloor (investigated 2026-06-30): a per-order fee floor/minimum was suspected because
+the parabolic fee → 0 as p → 0/1, potentially understating fees on longshot legs. Live
+``feeSchedule`` objects expose only ``{exponent, rate, takerOnly, rebateRate}`` — no
+``min`` / ``floor`` / ``minimum`` field exists. The model is correct as written; fee at price
+extremes approaching zero is intentional, not a gap. See docs/API_NOTES.md §Fees, M3 entry.
 """
 
 from __future__ import annotations
