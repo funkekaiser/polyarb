@@ -1,7 +1,7 @@
 # polyarb — docker-compose for the read-only scanner
 #
 # Start the long-running scanner:
-#   docker compose -f docker/docker-compose.yml up --build
+#   docker compose -f docker/docker-compose.yml up --build -d
 #
 # One-shot commands (examples):
 #   docker compose -f docker/docker-compose.yml run --rm scan record
@@ -12,11 +12,16 @@
 # explicitly set EXECUTION_ENABLED=true in your .env — do not do this
 # without reading SPEC.md §"Non-negotiable constraints" first.
 
+# Project name — otherwise Compose derives it from the parent dir ("docker"), so
+# containers/volumes get named "docker-*". Pins them to "polyarb-*" instead.
+name: polyarb
+
 services:
   scan:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: polyarb:latest
     # Load .env from the repo root (git-ignored; copy from .env.example to create).
     # `env_file` is optional — the image has safe defaults for all required vars.
     env_file:
@@ -27,14 +32,61 @@ services:
       # value like "polyarb.db" is right for local runs but in-container resolves under the
       # root-owned WORKDIR /app — unwritable for the non-root user, and bypasses persistence).
       SQLITE_PATH: /data/polyarb.db
+      # Serve /metrics inside the container so the healthcheck has a liveness signal. Not
+      # published to the host below — add a `ports:` mapping to scrape it from outside.
+      METRICS_ENABLED: "true"
+      METRICS_PORT: "9090"
     restart: unless-stopped
+    # Let the scanner's graceful-shutdown handler drain the current pass on stop.
+    stop_grace_period: 30s
+    # tini as PID 1: clean signal forwarding + zombie reaping.
+    init: true
     volumes:
       # Named volume so SQLite history survives container restarts and rebuilds.
       - polyarb-data:/data
+    # --- hardening (fits the read-only product ethos) ---
+    read_only: true # immutable root fs; the app only writes to the /data volume
+    tmpfs:
+      - /tmp # scratch space the read-only root fs would otherwise deny
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # --- resource ceilings (honoured by `docker compose up`) ---
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 256
+        reservations:
+          memory: 128M
+    # --- liveness: scrape the in-container /metrics endpoint ---
+    # Proves the process is alive and serving. NOTE: /metrics runs on a daemon thread, so this
+    # detects a dead/crash-looping process, not a wedged scan loop — honest about its scope.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/metrics', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # Default command inherited from the image: scan --dry-run
     # Override per the one-shot examples above when needed.
+    logging:
+      # Cap container log growth so a long-running scanner can't fill the disk.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   polyarb-data:
-    # Persistent SQLite store. Survives `docker compose down`; removed only by
-    # `docker compose down -v` (destructive — you lose all historical scan data).
+    # Explicit, project-independent name (otherwise "polyarb_polyarb-data"). Persistent
+    # SQLite store: survives `docker compose down`; removed only by `docker compose down -v`.
+    name: polyarb-data

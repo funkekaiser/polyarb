@@ -47,7 +47,9 @@ USER polyarb
 # Runtime environment.
 # SQLITE_PATH is also the canonical location for the named volume mount.
 ENV SQLITE_PATH=/data/polyarb.db \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 
 # Run the pre-built binary directly — no uv wrapper needed at runtime.
 ENTRYPOINT ["/app/.venv/bin/polyarb"]
