@@ -29,6 +29,7 @@ from polyarb.detectors.base import (
     walk_and_size_buy_basket,
 )
 from polyarb.models import BookLevel, DetectorKind, Event, Leg, Market, Opportunity, OrderBook
+from polyarb.pricing.book_quality import is_corrupt_book
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import is_crossed, top_level_min_depth
 from polyarb.resolution.risk import ResolutionRisk, classify_market
@@ -120,8 +121,8 @@ class NegRiskBasketDetector:
         condition_ids: list[str] = []
         for market in live:
             book: OrderBook | None = snap.books.get(market.yes_token_id)
-            if book is None or book.best_ask is None or is_crossed(book):
-                return  # missing/stale book on a live outcome → partition incomplete; skip
+            if book is None or book.best_ask is None or is_crossed(book) or is_corrupt_book(book):
+                return  # missing/stale/corrupt book on a live outcome → partition incomplete; skip
             token_ids.append(market.yes_token_id)
             outcomes.append(market.group_item_title or market.outcomes[0])
             ask_levels.append(book.asks)
@@ -208,8 +209,9 @@ class NegRiskDualDetector:
         condition_ids: list[str] = []
         for market in live:
             book: OrderBook | None = snap.books.get(market.no_token_id)
-            if book is None or book.best_ask is None or is_crossed(book):
-                return  # missing/stale NO book on a live outcome → can't lock the dual; skip
+            # missing/stale/corrupt NO book on a live outcome → can't lock the dual; skip
+            if book is None or book.best_ask is None or is_crossed(book) or is_corrupt_book(book):
+                return
             token_ids.append(market.no_token_id)
             outcomes.append(market.group_item_title or market.outcomes[0])
             ask_levels.append(book.asks)

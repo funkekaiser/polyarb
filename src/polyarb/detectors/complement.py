@@ -26,6 +26,7 @@ from polyarb.detectors.base import (
     walk_and_size_buy_basket,
 )
 from polyarb.models import DetectorKind, Leg, Opportunity
+from polyarb.pricing.book_quality import is_corrupt_book
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import is_crossed, top_level_min_depth, walk_sell_legs
 
@@ -59,7 +60,10 @@ class ComplementDetector:
             if yes_book is None or no_book is None:
                 continue
             # Fix 2: skip markets with a crossed book (stale/erroneous data).
+            # A3-quiescence: also skip the #180 corrupt/stale 0.01/0.99 extreme-spread pattern.
             if is_crossed(yes_book) or is_crossed(no_book):
+                continue
+            if is_corrupt_book(yes_book) or is_corrupt_book(no_book):
                 continue
             fee_rate = fee_rate_for(market)
 
