@@ -160,11 +160,12 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
    bugs (null-safety, best=0 sentinel both directions, `seed()` last-write-wins).
 
    **Phase-3 design requirements (must hold before `streaming_enabled=true` is safe):**
-   - **R1 — REST-confirm before emit.** On a detector firing against streamed books, re-fetch that
-     candidate's *exact legs* via REST (near-simultaneously) and re-run the detector; emit only if
-     it still holds. Mandatory at minimum for `realizes="instant"` complement. Cheap (candidates
-     only); preserves the discovery-side CPU/IO win. Closes the phantom-complement + deep-drift +
-     cross-leg-skew findings in one stroke.
+   - **R1 — REST-confirm before emit.** **Barrier BUILT** (`engine/confirm.py`,
+     `confirm_candidate`): re-fetches a candidate's exact legs, re-runs its detector against fresh
+     books, returns the authoritative fresh opp only if the same leg-signature (under≠over,
+     basket≠dual) still holds — else None. Standalone + tested (`tests/test_confirm.py`).
+     **Remaining: wire it into the scan loop** (source books from the cache, run detectors →
+     candidates, confirm each before emit) — couples with R3/R7 below.
    - **R2 — per-token wall-clock freshness guard** (time since last applied delta *or* successful
      resync), distinct from the book's last-change `timestamp_ms`. Streaming staleness window in
      **seconds**, not `max_book_age_s=900`. Do NOT reuse `_fresh_books`-by-last-change for the
