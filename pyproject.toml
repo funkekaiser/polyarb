@@ -1,6 +1,6 @@
 [project]
 name = "polyarb"
-version = "0.5.0a1"
+version = "0.5.0a2"
 description = "Read-only Polymarket structural-arbitrage scanner. Detection is the product."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
