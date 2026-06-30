@@ -383,3 +383,191 @@ def test_emitted_counts_only_successes() -> None:
     scanner, kept = asyncio.run(go())
     assert len(kept) == 1  # the complement arb is still detected and returned
     assert scanner._totals["emitted"] == 0  # but nothing was successfully stored/emitted
+
+
+# ---------------------------------------------------------------------------
+# Dynamic gas integration (B2') — Scanner._resolve_gas
+# ---------------------------------------------------------------------------
+
+
+def _gas_transport(*, gas_status: int = 200, cg_status: int = 200) -> httpx.MockTransport:
+    """Route gas-station / CoinGecko hosts for the injected GasClient; 404 elsewhere."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if "gasstation.polygon.technology" in host:
+            return httpx.Response(gas_status, json={"standard": {"maxFee": 30.0}})
+        if "coingecko.com" in host:
+            return httpx.Response(cg_status, json={"polygon-ecosystem-token": {"usd": 0.10}})
+        return httpx.Response(404, json={})
+
+    return httpx.MockTransport(handler)
+
+
+def _scanner_with_gas(http: httpx.AsyncClient, gas_client, settings: Settings | None = None):
+    """A Scanner with dummy gamma/clob over ``http`` (unused by _resolve_gas) + injected gas
+    client. Returns ``(scanner, store)`` so the caller can close the store; ``http`` is owned
+    and closed by the caller's ``async with``."""
+    store = SqliteStore(":memory:")
+    scanner = Scanner(
+        settings or _settings(),
+        gamma=GammaClient(client=http),
+        clob=ClobClient(client=http),
+        store=store,
+        notifier=NullNotifier(),
+        gas_client=gas_client,
+    )
+    return scanner, store
+
+
+def _dummy_http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404, json={})))
+
+
+def test_resolve_gas_uses_live_oracle_when_client_injected() -> None:
+    # An injected GasClient makes _resolve_gas return live-derived costs, NOT the static config.
+    from polyarb.clients.gas import FIXED_GAS_UNITS, PER_LEG_GAS_UNITS, GasClient
+
+    def expected(units: int) -> Decimal:
+        return Decimal(units) * Decimal("30.0") * Decimal("1e-9") * Decimal("0.10")
+
+    async def go() -> tuple[Decimal, Decimal]:
+        async with (
+            _dummy_http() as http,
+            httpx.AsyncClient(transport=_gas_transport()) as gas_http,
+        ):
+            scanner, store = _scanner_with_gas(http, GasClient(client=gas_http))
+            try:
+                return await scanner._resolve_gas()
+            finally:
+                store.close()
+
+    fixed, per_leg = asyncio.run(go())
+    assert fixed == expected(FIXED_GAS_UNITS)
+    assert per_leg == expected(PER_LEG_GAS_UNITS)
+
+
+def test_resolve_gas_falls_back_to_static_on_oracle_failure() -> None:
+    # A live-oracle failure (HTTP 500) must NOT abort: _resolve_gas returns the static config gas.
+    from polyarb.clients.gas import GasClient
+
+    settings = _settings().model_copy(
+        update={"gas_estimate": Decimal("0.02"), "gas_per_leg_estimate": Decimal("0.05")}
+    )
+
+    async def go() -> tuple[Decimal, Decimal]:
+        async with (
+            _dummy_http() as http,
+            httpx.AsyncClient(transport=_gas_transport(gas_status=500)) as gas_http,
+        ):
+            scanner, store = _scanner_with_gas(http, GasClient(client=gas_http), settings)
+            try:
+                return await scanner._resolve_gas()
+            finally:
+                store.close()
+
+    fixed, per_leg = asyncio.run(go())
+    assert fixed == Decimal("0.02")
+    assert per_leg == Decimal("0.05")
+
+
+def test_resolve_gas_static_when_dynamic_disabled() -> None:
+    # Default path: no injected client and use_dynamic_gas=False → _gas_client is None,
+    # _resolve_gas returns the static config gas and never constructs a live client.
+    settings = _settings().model_copy(
+        update={"gas_estimate": Decimal("0.01"), "gas_per_leg_estimate": Decimal("0.03")}
+    )
+
+    async def go() -> tuple[Decimal, Decimal]:
+        async with _dummy_http() as http:
+            scanner, store = _scanner_with_gas(http, None, settings)
+            assert scanner._gas_client is None
+            try:
+                return await scanner._resolve_gas()
+            finally:
+                store.close()
+
+    fixed, per_leg = asyncio.run(go())
+    assert fixed == Decimal("0.01")
+    assert per_leg == Decimal("0.03")
+
+
+def test_use_dynamic_gas_flag_constructs_client() -> None:
+    # When use_dynamic_gas=True and no client is injected, the Scanner builds its own GasClient.
+    from polyarb.clients.gas import GasClient
+
+    settings = _settings().model_copy(update={"use_dynamic_gas": True})
+
+    async def go() -> bool:
+        async with _dummy_http() as http:
+            scanner, store = _scanner_with_gas(http, None, settings)
+            try:
+                is_gas = isinstance(scanner._gas_client, GasClient)
+                # Close the Scanner-owned gas client so its httpx pool doesn't leak.
+                await scanner._gas_client.aclose()
+                return is_gas
+            finally:
+                store.close()
+
+    assert asyncio.run(go()) is True
+
+
+def test_run_closes_gas_client_on_shutdown() -> None:
+    # The run() finally block must close the gas client on every exit path (mirrors the
+    # notifier-close guarantee). A spy records whether aclose() was called.
+    class _SpyGas:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def gas_costs(self) -> tuple[Decimal, Decimal]:
+            return Decimal("0.02"), Decimal("0.05")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    spy = _SpyGas()
+    books = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(books)
+
+    async def go() -> _SpyGas:
+        async with httpx.AsyncClient(transport=transport) as c:
+            scanner = Scanner(
+                _settings(),
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=NullNotifier(),
+                gas_client=spy,  # type: ignore[arg-type]
+            )
+            await scanner.run(passes=1)
+            return spy
+
+    assert asyncio.run(go()).closed is True
+
+
+def test_scan_once_survives_gas_oracle_failure_end_to_end() -> None:
+    # End-to-end: a failing gas oracle must NOT abort scan_once — the complement arb is still
+    # detected using the static config gas (gas off ⇒ net 0.10 unchanged).
+    from polyarb.clients.gas import GasClient
+
+    books = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(books)
+
+    async def go() -> list:
+        async with (
+            httpx.AsyncClient(transport=transport) as c,
+            httpx.AsyncClient(transport=_gas_transport(gas_status=500)) as gas_http,
+        ):
+            scanner = Scanner(
+                _settings(),  # default gas_estimate/gas_per_leg are 0.02/0.05 but min_notional=1
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=NullNotifier(),
+                gas_client=GasClient(client=gas_http),
+            )
+            return await scanner.scan_once()
+
+    opps = asyncio.run(go())
+    assert len(opps) == 1
+    assert opps[0].detector == DetectorKind.COMPLEMENT

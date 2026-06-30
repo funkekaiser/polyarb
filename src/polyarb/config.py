@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # future dynamic gas client (use_dynamic_gas) can override from a live oracle.
     gas_estimate: Decimal = Decimal("0.02")
     gas_per_leg_estimate: Decimal = Decimal("0.05")
+    # When true, fetch live gas (Polygon Gas Station + POL/USD) each pass via GasClient and use
+    # it instead of the static estimates above; on any oracle failure the scanner falls back to
+    # the static values. Off by default — opt-in so the live dependency can't surprise a monitor.
+    use_dynamic_gas: bool = False
     # A3 — staleness gate: drop order books whose CLOB last-change timestamp is older than this.
     # This is a *gross-staleness / corrupt-snapshot* net (the CLOB has served hours-old
     # 0.01/0.99 snapshots that would manufacture phantom arbs), NOT a fine freshness guarantee:

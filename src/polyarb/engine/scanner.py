@@ -13,12 +13,14 @@ import contextlib
 import signal
 from collections import Counter
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 import structlog
 
 from polyarb.clients.clob import ClobClient
 from polyarb.clients.gamma import GammaClient
+from polyarb.clients.gas import GasClient, GasUnavailable
 from polyarb.config import Settings
 from polyarb.detectors.base import Snapshot
 from polyarb.detectors.complement import ComplementDetector
@@ -114,12 +116,16 @@ class Scanner:
         notifier: Notifier | None = None,
         relations: list[Relation] | None = None,
         tags: list[MarketTags] | None = None,
+        gas_client: GasClient | None = None,
     ) -> None:
         self._settings = settings
         self._gamma = gamma
         self._clob = clob
         self._store = store
         self._notifier = notifier or NullNotifier()
+        # Live gas oracle (B2'): an injected client wins; else create one only when enabled.
+        # When None, the static config gas defaults are used (the default path).
+        self._gas_client = gas_client or (GasClient() if settings.use_dynamic_gas else None)
         # Dependency edges = hand-declared relations + auto-generated ladders/DAGs from market
         # tags (docs/RELATIONS.md). With no tags supplied the generators yield nothing, so the
         # dependency detector stays inert until markets are tagged — declared, never inferred.
@@ -138,6 +144,17 @@ class Scanner:
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
         # Cumulative metrics across passes (Prometheus /metrics could expose these later).
         self._totals: Counter[str] = Counter()
+
+    async def _resolve_gas(self) -> tuple[Decimal, Decimal]:
+        """Per-pass (gas_fixed, gas_per_leg) in USDC: the live oracle when enabled, else the
+        static config estimates. A live-oracle failure falls back to the static values (logged)
+        and never aborts a pass."""
+        if self._gas_client is not None:
+            try:
+                return await self._gas_client.gas_costs()
+            except GasUnavailable as exc:
+                log.warning("dynamic_gas_unavailable", error=repr(exc))
+        return self._settings.gas_estimate, self._settings.gas_per_leg_estimate
 
     async def _fetch_books(self, token_ids: set[str]) -> dict[str, OrderBook]:
         """Fetch books concurrently; skip tokens without a live book (404) or transient errors."""
@@ -194,13 +211,15 @@ class Scanner:
             global_stale_dropped=stale_dropped,  # global only; the pass total is in scan_complete
         )
 
+        gas_fixed, gas_per_leg = await self._resolve_gas()
+
         opps: list[Opportunity] = []
         global_snap = Snapshot(
             books=books,
             markets=markets,
             relations=self._relations,
-            gas=s.gas_estimate,
-            gas_per_leg=s.gas_per_leg_estimate,
+            gas=gas_fixed,
+            gas_per_leg=gas_per_leg,
             days_to_resolution=_days_to_resolution(markets, now),
         )
         opps.extend(self._complement.detect(global_snap))
@@ -231,8 +250,8 @@ class Scanner:
             event_snap = Snapshot(
                 books=event_books,
                 event=event,
-                gas=s.gas_estimate,
-                gas_per_leg=s.gas_per_leg_estimate,
+                gas=gas_fixed,
+                gas_per_leg=gas_per_leg,
                 days_to_resolution=_days_to_resolution(event.markets, now),
             )
             opps.extend(self._negrisk.detect(event_snap))
@@ -326,6 +345,9 @@ class Scanner:
             # exit path — signal, passes/max_seconds, or error — so we don't leak the pool.
             with contextlib.suppress(Exception):
                 await self._notifier.aclose()
+            if self._gas_client is not None:
+                with contextlib.suppress(Exception):
+                    await self._gas_client.aclose()
             # `attempts` counts scan_once invocations; self._totals["passes"] counts the ones
             # that completed without error, so a failed pass no longer logs a contradictory pair.
             log.info("scanner_stopped", attempts=attempts, totals=dict(self._totals))
