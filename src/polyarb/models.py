@@ -238,6 +238,9 @@ class OrderBook(BaseModel):
     min_order_size: Decimal | None = None
     neg_risk: bool = False
     last_trade_price: Decimal | None = None
+    # Server-supplied book hash (WS ``book``/``price_change`` events; REST may also carry it).
+    # Lets the streaming cache track snapshot identity; absent on books built in tests.
+    hash: str | None = None
 
     @field_validator("timestamp_ms", mode="before")
     @classmethod
