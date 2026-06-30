@@ -774,6 +774,45 @@ class TestHashRevert:
         cache.apply(_book_event(TOKEN_A, hash_="A"))  # echo, not a revert
         assert TOKEN_A not in cache.stale_tokens
 
+
+class TestNullSafety:
+    """Bug-hunt regressions: apply() must never raise on null list fields (contract)."""
+
+    def test_price_changes_null_does_not_raise(self) -> None:
+        cache = OrderBookCache()
+        # key present with JSON null — .get(..., []) default does NOT fire for an explicit None.
+        assert cache.apply({"event_type": "price_change", "price_changes": None}) == set()
+
+    def test_book_bids_asks_null_does_not_raise(self) -> None:
+        cache = OrderBookCache()
+        changed = cache.apply(
+            {
+                "event_type": "book",
+                "asset_id": TOKEN_A,
+                "market": MARKET_A,
+                "timestamp": "1000",
+                "bids": None,
+                "asks": None,
+            }
+        )
+        assert TOKEN_A in changed
+        ob = cache.book(TOKEN_A)
+        assert ob is not None and ob.best_bid is None and ob.best_ask is None
+
+    def test_best_bid_zero_sentinel_not_stale(self) -> None:
+        """A declared best_bid='0' (no-bid sentinel) after emptying the side must not flag stale."""
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A))  # bid 0.40 / ask 0.60
+        # Remove the only bid; server declares best_bid='0' (no bids), best_ask unchanged.
+        cache.apply(
+            _price_change_event(
+                [_pc_entry(price="0.40", size="0", side="BUY", best_bid="0", best_ask="0.60")]
+            )
+        )
+        assert TOKEN_A not in cache.stale_tokens
+
+
+class TestHashRevertExtra:
     def test_revert_via_price_change_hash(self) -> None:
         """A price_change whose hash reverts to an earlier book hash flags stale.
 

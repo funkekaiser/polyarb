@@ -226,14 +226,14 @@ class OrderBookCache:
             ts = 0
 
         bids: dict[Decimal, Decimal] = {}
-        for level in event.get("bids", []):
+        for level in event.get("bids") or []:
             p = _dec(level.get("price"))
             s = _dec(level.get("size"))
             if p is not None and s is not None and p > 0 and s > 0:
                 bids[p] = s
 
         asks: dict[Decimal, Decimal] = {}
-        for level in event.get("asks", []):
+        for level in event.get("asks") or []:
             p = _dec(level.get("price"))
             s = _dec(level.get("size"))
             if p is not None and s is not None and p > 0 and s > 0:
@@ -271,7 +271,7 @@ class OrderBookCache:
             ts = 0
 
         changed: set[str] = set()
-        for entry in event.get("price_changes", []):
+        for entry in event.get("price_changes") or []:
             if not isinstance(entry, dict):
                 self.skip_count += 1
                 continue
@@ -327,10 +327,13 @@ class OrderBookCache:
                 declared_ba = _dec(declared_ba_raw) if declared_ba_raw not in ("", None) else None
                 computed_bb = state.best_bid_price()
                 computed_ba = state.best_ask_price()
+                # A declared best of 0 (or blank) is a "no quote on this side" sentinel, not a
+                # real price — only compare a strictly-positive declared best, else an emptied
+                # side (server sends best_bid="0") spuriously mismatches our computed None.
                 mismatch = False
-                if declared_bb is not None and computed_bb != declared_bb:
+                if declared_bb is not None and declared_bb > 0 and computed_bb != declared_bb:
                     mismatch = True
-                if declared_ba is not None and computed_ba != declared_ba:
+                if declared_ba is not None and declared_ba > 0 and computed_ba != declared_ba:
                     mismatch = True
                 if mismatch:
                     self._stale.add(asset_id)
