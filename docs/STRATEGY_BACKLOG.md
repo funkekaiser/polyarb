@@ -64,7 +64,7 @@ Already decided (no action): **C2** probabilistic ranking — *deferred* (needs 
 |---|-----|-----|-------|----------------------|
 | C1+ | ✶ | LOW | Optional extension of the shipped C1 dispute gate: a curated subjective-/manipulable-source denylist. | Only if a credible curated list emerges; the active-dispute signal is the real one. Don't guess categories. |
 | C2 | ✶ | — | "Risk-adjusted" ranking by clean-resolution probability `p·edge − (1−p)·loss`. | **DEFERRED (2026-06-30, Jonathan): do not implement.** It needs a void/dispute probability we can't measure (A2), and we're staying with guaranteed strategies — no probabilistic ranking for now. |
-| C4 | ✶ | MED-HIGH | Backtest "would-be P&L" is upward-biased fiction — re-counts persistent mispricings every pass, costless full capture, no realized-outcome tracking. | Dedupe to distinct economic opps; track realized resolution; label as an upper bound. |
+| C4 | ✶ | MED-HIGH | Backtest "would-be P&L" is upward-biased fiction — re-counts persistent mispricings every pass, costless full capture, no realized-outcome tracking. | Dedupe to distinct economic opps; track realized resolution; label as an upper bound. **Subsumed by E1** (the ledger is the mechanism). |
 
 ## Open — Tier D: hardening / smaller
 
@@ -78,6 +78,21 @@ Already decided (no action): **C2** probabilistic ranking — *deferred* (needs 
 | D6 | C | LOW | `walk_sell_legs` takes a scalar fee only (asymmetric with `walk_buy_legs`). | Accept `Decimal | Sequence[Decimal]` + reuse `_per_leg_rates`. |
 | F2 | ✶ | LOW | The walks aren't property-tested directly (pure `*_profit` fns are off the runtime path). | Property-test `walk_buy_legs`/`walk_sell_legs` (monotone marginal, prefix-optimality, fee ≥ 0). |
 | C-defer | C | LOW | Complement deferrals: greedy-walk vs threshold coupling; worst-fill `Leg.price` (Phase-5 executor); NegRisk merge routing + higher gas (Phase-5); 1e-28 VWAP rounding / min-size. | Mostly Phase-5 / negligible; revisit then. |
+
+## Open — Tier E: realized-outcome tracking & evaluation (added 2026-06-30)
+
+The natural next chunk *after* detection. Source: `docs/QUICK_THOUGHTS_OF_THE_DEV.md` (now
+folded here). Today we record opportunities **at detection time only** and never learn how the
+underlying markets actually resolved — so we can't compute realized P&L, audit whether
+"guaranteed" was truly guaranteed, or measure a statistical edge. **E1 is the foundation; E2/E4
+depend on it.** This is its own body of work, not a quick add.
+
+| # | Str | Sev | Issue | Fix direction |
+|---|-----|-----|-------|---------------|
+| **E1** | ✶ | MED (foundation) | **No realized-outcome ledger.** Emitted opps aren't deduped to distinct economic events, and nothing fetches their eventual resolution → realized P&L is unknown; `backtest` (C4) is an upper-bound fiction. | Persist each emitted opp as a distinct economic event; a follow-up (read-only) job polls Gamma/Data for the resolution of its `condition_ids` and records realized payoff + P&L. Parent of **C4**; prerequisite for E2/E4. |
+| **E2** | ✶ (C,B,D) | HIGH (audit) | **No alarm when a "guaranteed" arb settles negative.** A model-free lock can still go bad via void/50-50 (**A2-void**), an unfilled leg (execution), or a mis-declared relation (**D1/D2**) — silently. This is an audit of our core claim. | On top of E1: follow each emitted *instant/structural* opp to settlement; **alert** (notifier) if realized P&L < 0. Stretch: flag earlier, the moment the live book makes positive settlement unreachable (overlaps **E3**). |
+| **E3** | ✶ | Phase-5 | **No live position monitor / edge-evaporation alert.** "Earlier, when it can't get positive anymore" assumes we hold a position and watch its book — an execution-side feature. | Defer to Phase 5: watch the live book of an open position; alert when the edge has evaporated. Depends on actually holding (or paper-trading) positions. |
+| **E4** | §5, C | DEFERRED | **No edge-vs-luck test for probabilistic schemes.** Permutation / p-test to tell a real statistical edge from luck. Caveat: **we take no probabilistic bets yet** (§5 off, C2 deferred) → nothing to test until real or paper-traded directional bets exist. | After E1 + recorded directional bets: run permutation/bootstrap tests on realized P&L (is mean > 0 beyond chance?). Until then it would test an empty sample. Depends on **E1**; pairs with **§5/C2**. |
 
 ---
 
@@ -94,4 +109,8 @@ C1-atom (conservative-size surface).
 - **On Jonathan's desk (need input, see below):** D1 policy, C1-atomicity-use (which size
   ranking/notional trust), B2′-num (real gas numbers), A2-void (curated denylist or accept).
 - **Deferred:** **C2** (probabilistic ranking — needs an unmeasurable probability). **§5** stays
-  opt-in / off by default.
+  opt-in / off by default. **E4** (edge-vs-luck test — no probabilistic bets to test yet).
+- **Next real chunk (post-detection):** **Tier E** — build the realized-outcome ledger (**E1**),
+  then the guaranteed-slip alarm (**E2**). This is where evaluation/alerting lives; it's its own
+  workstream, not a quick add. Wiring a notifier (currently `none`) is the cheap prerequisite for
+  E2's alerts.
