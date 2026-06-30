@@ -10,6 +10,7 @@
 The NegRisk basket arb buys 1 YES of every outcome of an exhaustive, mutually-exclusive event
 for `Σ a_yes,i < 1`; exactly one resolves to \$1, so the payoff is a guaranteed \$1 and the
 edge is `1 − Σ − fees − gas`, **model-free** (no forecasting opinion — SPEC §Mission).
+> Canonical identity: SPEC.md §The math; reproduced here for the hedging-impossibility proof.
 
 That guarantee is only as good as "we hold YES of *every* possible winner." In practice you
 often **can't or shouldn't buy all the legs**:
@@ -27,6 +28,8 @@ If you respond by buying only a **subset** `S ⊊ {1..N}`, you no longer hold an
 raised: *how do we hedge that?*
 
 ## The hard fact: a partial basket cannot be made riskless model-free
+
+> Canonical identity: SPEC.md §The math; reproduced here for the hedging-impossibility proof.
 
 To guarantee a payoff floor in **every** outcome you need positive payoff in the outcomes of
 `Sᶜ` too. By linear-programming / no-arbitrage duality, the only **model-free** payoff floors
@@ -110,7 +113,7 @@ expect it to lose to a feasible YES basket.
 A partial set that is neither completable nor dual-capturable is not emitted. Reporting it as
 an arb would be fabricating profit. Silence is correct.
 
-## §5 — The probabilistic partial basket (DECISION REQUIRED, not built)
+## §5 — The probabilistic partial basket (DECIDED — see §5 block below / shipped)
 
 The only way to "act on" a genuinely un-completable subset is to treat it as a bet and price
 the residual. The least-bad, still-disciplined version uses the **market's own** implied

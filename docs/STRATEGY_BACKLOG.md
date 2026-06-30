@@ -30,18 +30,22 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 ---
 
-## ON JONATHAN'S DESK — decisions (blocking nothing today)
+## ON JONATHAN'S DESK — decisions awaiting your call (blocking nothing today)
 
-Each is implemented as far as it can go without a judgment call; defaults are safe/conservative.
+Each is implemented to a safe/conservative default; full context lives in the tier tables (one
+home per item — no duplicate prose). Awaiting only a judgment call:
 
-| # | Decision | Default in place | What you'd decide |
-|---|----------|------------------|-------------------|
-| **D1** | Fingerprint gate for *hand-declared* relations. No safe default for the absent-fingerprint case. | Inert — `SEED_RELATIONS`/`TAG_REGISTRY` are empty (dependency detector off by default); auto-generated relations already gate. | Pick a policy before seeding real relations: (a) require `fingerprint_a/b` args in `add_relation` (hard gate, loses the one-liner); (b) optional args (honor-system); (c) treat the manual declaration as the human attestation + document. |
-| **C1-atom-use** | Should ranking (the $-axis) and the `MIN_NOTIONAL` filter use the optimistic `executable_size` or the new conservative `conservative_size` (or a haircut blend)? | Optimistic `executable_size` (SPEC's cumulative-depth definition); `conservative_size` surfaced as a diagnostic. | Risk appetite: keep optimistic for *detection*, or switch the floor/rank to conservative (fewer, more-robust opps). Matters most once execution is live. |
-| **B2′-num** | Real per-execution gas constants. | Conservative static ceiling (`gas_estimate=0.02`, `gas_per_leg_estimate=0.05` USDC); **or** flip `use_dynamic_gas=true` for the live oracle (B2′-dyn, shipped). | Either accept the live oracle as the source of truth, or measure Polygon/USDC merge-redeem + per-taker-fill once and pin the static knobs. Ops task. |
-| **A2-void** | Pre-resolution void/50-50 for *live* legs — not reliably detectable from available data. | Documented residual; partly gated by the C1 active-dispute → AT_RISK signal; closed-leg voids handled by `live_partition`. | Accept the residual, or invest in a curated void-prone source/category denylist (needs a live-API survey). |
+- **D1** — fingerprint-gate policy for hand-declared relations (hard gate / honor-system / attestation). → *Tier D*
+- **C1-atom-use** — should ranking ($-axis) + the `MIN_NOTIONAL` filter trust the optimistic `executable_size` or the conservative `conservative_size` (or a haircut)? → *Tier A (C1-atomicity-use)*
+- **B2′-num** — accept the live gas oracle as source of truth, or measure + pin static gas numbers? → *Tier D*
+- **A2-void** — accept the pre-resolution void residual, or invest in a curated void-prone denylist? → *Tier A (A2-void)*
 
-Already decided (no action): **C2** probabilistic ranking — *deferred* (needs a probability we can't measure). **§5** partial basket — *opt-in, off by default*.
+## Decided / closed (no action)
+
+- **C2** — probabilistic / risk-adjusted ranking: **deferred** (needs a void/dispute probability we can't measure; staying with guaranteed strategies).
+- **§5** — opt-in partial basket: **shipped, off by default** (directional; never on the default scan path).
+- **C5** — folded into **C3** (rank by absolute net $).
+- **C4** — folded into **E1** (the realized-outcome ledger is the mechanism; backtest upper-bound labelling happens there).
 
 ---
 
@@ -64,7 +68,8 @@ Already decided (no action): **C2** probabilistic ranking — *deferred* (needs 
 |---|-----|-----|-------|----------------------|
 | C1+ | ✶ | LOW | Optional extension of the shipped C1 dispute gate: a curated subjective-/manipulable-source denylist. | Only if a credible curated list emerges; the active-dispute signal is the real one. Don't guess categories. |
 | C2 | ✶ | — | "Risk-adjusted" ranking by clean-resolution probability `p·edge − (1−p)·loss`. | **DEFERRED (2026-06-30, Jonathan): do not implement.** It needs a void/dispute probability we can't measure (A2), and we're staying with guaranteed strategies — no probabilistic ranking for now. |
-| C4 | ✶ | MED-HIGH | Backtest "would-be P&L" is upward-biased fiction — re-counts persistent mispricings every pass, costless full capture, no realized-outcome tracking. | Dedupe to distinct economic opps; track realized resolution; label as an upper bound. **Subsumed by E1** (the ledger is the mechanism). |
+
+(C4 — backtest "would-be P&L" upper-bound labelling — folded into **E1**; see Tier E and Decided/closed.)
 
 ## Open — Tier D: hardening / smaller
 

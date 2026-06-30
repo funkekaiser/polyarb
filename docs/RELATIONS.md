@@ -25,6 +25,8 @@ violation:   price(A) > price(B)
 
 **Locked trade:** buy `YES_B` and buy `NO_A`.
 
+> Canonical identity: SPEC.md §The math; reproduced here for the ladder example.
+
 | Resolved outcome | `YES_B` pays | `NO_A` pays | Total payoff |
 |---|---|---|---|
 | A occurs (⇒ B occurs) | 1 | 0 | **1** |

@@ -67,17 +67,7 @@ uv run pytest tests/test_invariants.py --hypothesis-seed=random -p no:cacheprovi
 
 ## 3. How the bug hunt was run (reproducible)
 
-Two `general-purpose` subagents (Sonnet), each in its **own git worktree** (isolated
-checkout + venv, so they could run `uv`/`pytest` in parallel without the shared-venv race —
-see `[[venv-no-sync-fix]]`). One probed the **math/detectors/relations/ranking**, the other
-the **models/engine/sinks**. Each wrote adversarial + property tests, *ran* them, and
-reported concrete failing cases classified as CONFIRMED BUG / SPEC-DEVIATION /
-MODELING-LIMITATION / NON-ISSUE. Findings were then triaged by hand (not all subagent
-suggestions were accepted — see §5/§6), fixed in `main`, and pinned with regression tests.
-
-To repeat: launch a subagent with `isolation: "worktree"`, point it at a subsystem, tell it
-to hunt boundaries/invariants and *classify + minimally reproduce* each finding, then triage
-yourself. Clean up with `git worktree remove --force <path>` afterward.
+Process (subagents, worktrees, adversarial verify) → CLAUDE.md Operating model §Running a bug hunt.
 
 ## 4. Bugs found and fixed
 
@@ -157,17 +147,10 @@ you can revisit deliberately.
   exact record and `recent()` reconstructs from it; only ad-hoc SQL on the numeric columns
   sees float imprecision.
 
-## 6. One open design decision for you — ranking order
+## 6. Ranking order — resolved
 
-`engine/ranking.py` sorts by **`(resolution_risk, −net_profit_bps, −annualized)`** — i.e.
-*safest resolution first*, then profit, then annualized. SPEC's repo-layout note says
-"sort by net_profit, annualized, risk". These genuinely differ: today's code will rank a
-safe-but-smaller edge above a richer riskier one.
-
-I left the current (risk-first) behavior because resolution risk is described as a
-"first-class filter" and ranking safety-first is defensible — but it's your call. If you'd
-rather follow SPEC's literal priority (annualized as a primary signal, risk last), say so and
-I'll flip `_sort_key` and update the tests.
+(Resolved — see STRATEGY_BACKLOG.md C3: rank by absolute net $; risk tier remains primary,
+then total net profit in USDC, then annualized.)
 
 ## 7. Where bugs are most likely to hide (dig here next)
 

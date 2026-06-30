@@ -14,11 +14,7 @@ constraints, the tech stack, the repository layout, and the phased plan all live
 file is the *operational* guide for a coding session; it does not restate SPEC, it points to
 it.
 
-> Status: **Phases 1–4 complete** — read-only clients + models, the three detectors with
-> property-tested math, the dependency ladders/DAGs (RELATIONS.md), a working
-> `scan --dry-run` (engine/filters/ranking/sinks), and hardening/analytics (Docker,
-> `backtest`/`replay`, graceful shutdown, structured logs). Remaining: **Phase 5** —
-> execution module (scaffold only, default OFF).
+> Status: **Phases 0–4 complete; Phase 5 (execution) gated off — see SPEC.md.**
 
 ## Doc map — one home per fact (avoid drift)
 
@@ -32,8 +28,10 @@ it.
 - **`docs/TESTING.md`** — how correctness is defined, the test-suite map, the adversarial
   bug-hunt findings + fixes, known limitations, and where bugs are likely to hide.
 - **`docs/STRATEGY_BACKLOG.md`** — the strategy/worklist of committee findings not yet implemented.
-- **`docs/RUNNING.md`** — operator guide: local vs Docker, persistence, env-var reference, logs, graceful stop.
-- **`DEMO.md`** — the guided, user-facing tour of the working commands.
+- **`docs/POLYARB_DOCS.md`** — operating guide (Docker-first): how the container works, deploy, configuration, where results go, manual/local run (backup), macOS venv troubleshooting.
+- **`docs/HEDGING.md`** — partial-basket hedging design and decision menu: the model-free menu (§1–3: drop-eliminated, NO-dual, refuse) and the probabilistic-partial decision (§5, opt-in, shipped).
+- **`docs/QUICK_THOUGHTS_OF_THE_DEV.md`** — transient dev scratchpad; dump half-formed ideas here, triage into STRATEGY_BACKLOG.md, then clear.
+- **`README.md`** — the front door: overview + the Docker quick-start, pointing into POLYARB_DOCS/SPEC.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
 it's an API fact). Don't copy it here.
@@ -89,8 +87,21 @@ subagents do the volume.
   a single reviewer's blind spots are unacceptable — not for routine diffs. Diversity of lens
   beats more reviewers of the same lens; pair it with the per-finding adversarial verify above.
 - **Caveat:** subagents sharing this repo's venv can re-trigger the macOS `.pth` hidden-flag
-  issue (see "venv" below). Tell file-only agents not to run `uv sync`/`uv run`, or give a
-  mutating agent `isolation: "worktree"`.
+  issue (see docs/POLYARB_DOCS.md §Troubleshooting). Tell file-only agents not to run `uv sync`/`uv run`,
+  or give a mutating agent `isolation: "worktree"`.
+
+### Running a bug hunt
+
+Delegate to two or more `general-purpose` subagents (Sonnet), each in its **own git worktree**
+(`isolation: "worktree"`) so they can run `uv`/`pytest` in parallel without the shared-venv
+race. Partition the subsystems (e.g. math/detectors/relations vs models/engine/sinks). Each
+agent writes adversarial + property tests, *runs* them, and returns findings classified as
+`CONFIRMED BUG / SPEC-DEVIATION / MODELING-LIMITATION / NON-ISSUE`. Triage the results
+yourself — not all subagent suggestions are correct. Fix confirmed bugs in `main`, pin each
+with a regression test. For strategy-level soundness (not just mechanical bugs), convene an
+Opus review panel (see "Convene a review panel" above). Clean up worktrees with
+`git worktree remove --force <path>`. Findings and fixes → `docs/TESTING.md §4`; durable
+strategy concerns → `docs/STRATEGY_BACKLOG.md`.
 
 ## Workflow: phased, with review gates
 
@@ -118,34 +129,15 @@ uv run mypy src                                  # strict type check
 docker compose -f docker/docker-compose.yml up --build   # containerized long-running scanner
 ```
 
-### venv: the macOS hidden-`.pth` problem and the layered fix
+### venv: the macOS hidden-`.pth` problem
 
-**Root cause of the recurring `ModuleNotFoundError: No module named 'polyarb'`.** On macOS,
-`uv run` re-applies the BSD `UF_HIDDEN` flag to the installed `polyarb.pth` (the editable-
-install path file), and **Python 3.12's `site.addpackage` silently skips hidden `.pth`
-files**. So `src/` never lands on `sys.path` and the import fails — repeatedly, because it
-re-hides on the next `uv run`. This is *not* the rename and *not* link-mode (it happens under
-both `copy` and `hardlink`); diagnose with `ls -lO .venv/lib/python3.12/site-packages/*.pth`
-(look for the `hidden` flag).
+**The venv does not self-heal.** Run `uv sync --dev` yourself at session start and after any
+dependency change. Within the session that set the `PYTHONPATH=src` env var in
+`.claude/settings.json`, prefix commands with `PYTHONPATH=src` manually (the setting only
+takes effect next session).
 
-The fix makes imports **independent of the `.pth`** so the hidden flag stops mattering:
-
-- **Tests** — `pyproject.toml` sets `pythonpath = ["src"]`, so `pytest` finds `polyarb`
-  regardless of the `.pth`. (Robust; needs nothing else.)
-- **CLI / `uv run python` / scripts** — `.claude/settings.json` sets `PYTHONPATH=src`
-  (honored before site processing). `scripts/demo.py` also self-bootstraps `src/` onto the
-  path. Note: a `settings.json` env change only takes effect **next** session — within the
-  session that set it, prefix commands with `PYTHONPATH=src` manually.
-- **Auto-sync race** — `UV_NO_SYNC=1` (same file) keeps `uv run` from rebuilding the editable
-  install mid-run; with auto-sync off there's no concurrent-rebuild race.
-- **One-shot rescue** if you still hit it: `chflags nohidden .venv/lib/python3.12/site-packages/*.pth`.
-
-`uv.toml` pins `link-mode = "hardlink"` (not `copy`) — not as the cure, but because the venv
-`.pth` then shares the uv cache inode, so a single `chflags` on either clears both.
-
-Consequence: **the venv does not self-heal.** Run `uv sync --dev` yourself at session start
-and after any dependency change. Hard recovery: `rm -rf .venv && uv sync --dev`. CI is
-unaffected (fresh Linux installs — no `UF_HIDDEN`).
+Full troubleshooting (root cause, layered fix, `chflags nohidden` one-shot rescue) →
+**docs/POLYARB_DOCS.md §Troubleshooting**.
 
 ## Architecture (mental model — full tree is in SPEC.md)
 

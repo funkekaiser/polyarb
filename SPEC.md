@@ -6,6 +6,8 @@ Build **`polyarb`**, a service that continuously scans Polymarket for **structur
 
 **Detection is the deliverable.** A separate, opt-in, default-disabled module *may* place orders later, but the project is valuable and complete as a read-only detector. Build it that way.
 
+> **Status (2026-06-30):** Phases 0–4 complete — the read-only scanner (clients + typed models, the three detectors with property-tested math incl. detector hardening, the dependency ladders/DAGs, engine/filters/ranking/sinks, Docker + analytics + the dynamic-gas oracle). Phase 5 (execution) is a **gated, default-OFF scaffold — not built**. Per-phase status is marked in the plan below.
+
 The three structural edges to detect (math specified below):
 
 1. **Complement arbitrage** — within a single binary market, `YES + NO ≠ 1`.
@@ -21,7 +23,7 @@ The three structural edges to detect (math specified below):
    - `https://docs.polymarket.com` (start at the API reference / introduction, then the Gamma, CLOB, Data, websocket, fees, and neg-risk pages)
    - `https://github.com/Polymarket/py-sdk` (the unified SDK — README, methods, install). NOTE: the old `py-clob-client` is archived and non-functional; its replacement is `polymarket-client` (pip, beta). See `docs/API_NOTES.md`.
    - Confirm the current settlement/collateral token (USDC vs the newer pUSD) and the split/merge + NegRisk-convert mechanics from the docs.
-   Write a short `docs/API_NOTES.md` capturing what you verified (base URLs, key endpoints, auth, rate limits, identifier model) with the date. The rest of the build references that file, not assumptions.
+   Live-verified API facts (base URLs, key endpoints, auth, rate limits, identifier model) are captured — dated — in `docs/API_NOTES.md`. The rest of the build references that file, not assumptions.
 
 2. **Read-only by default — hard rule.** The scanner must never create, sign, post, or cancel an order, and must never touch a private key, unless `EXECUTION_ENABLED=true` AND an interactive human confirmation is given at runtime. The default config and the default `scan` command are detection-only. Gamma and Data require no auth; CLOB **book reads** are public; only **trading** needs credentials. The detector must not even instantiate a signing client.
 
@@ -98,7 +100,7 @@ polyarb/
   uv.lock
   README.md
   SPEC.md                      # this file
-  CLAUDE.md                    # agent working notes (create in Phase 0)
+  CLAUDE.md                    # session guide: rules, commands, architecture mental model
   .env.example                 # placeholders only — never real secrets
   .gitignore
   .pre-commit-config.yaml
@@ -144,8 +146,8 @@ polyarb/
       store.py                 # SQLite persistence (interface + impl)
       notify.py                # webhook/ntfy/discord (pluggable, optional)
     execution/                 # GATED — default OFF
-      guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm  # Phase 5 — not yet created
-      executor.py              # multi-leg submission via polymarket-client (only behind guard)  # Phase 5 — not yet created
+      guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm  # Phase 5 — gated scaffold, default OFF
+      executor.py              # multi-leg submission via polymarket-client (only behind guard)  # Phase 5 — gated scaffold, default OFF
     cli.py                     # `scan` (dry-run default), `backtest`, `replay`, `record`
   tests/
     fixtures/                  # recorded API JSON
@@ -164,33 +166,33 @@ polyarb/
 
 > After every phase: `ruff check` + `ruff format` + type-check + `pytest` must pass. Commit. Then STOP and summarize. Wait for my approval.
 
-**Phase 0 — Bootstrap & verify.**
+**Phase 0 — Bootstrap & verify.** ✅ *(complete)*
 - Verify the live API (constraint #1) and write `docs/API_NOTES.md`.
 - `git init`; scaffold the tree; `uv init` + `pyproject.toml` with deps; `.gitignore`; `.env.example`; `pre-commit` (ruff+mypy); `.github/workflows/ci.yml`; a `CLAUDE.md` capturing the constraints and stack so future sessions stay consistent; a stub `README.md`.
 - **DoD:** repo builds, `uv run python -c "import polyarb"` works, CI is green on an empty test, `API_NOTES.md` exists and is dated. **Gate.**
 
-**Phase 1 — Clients & models.**
+**Phase 1 — Clients & models.** ✅ *(complete)*
 - Implement `gamma`, `clob` (public reads only), `data`, `ws`, `ratelimit`. Pydantic models for Event/Market/Outcome/OrderBook. Resolve the condition_id ↔ token_id identifier model correctly.
 - `scripts/record_fixtures.py` captures real samples; commit a representative fixture set (include at least one binary market, one multi-outcome NegRisk event, and one fee-free + one fee'd category).
 - Offline tests parse fixtures into models.
 - **DoD:** `uv run polyarb record` pulls live read-only data; client tests pass offline. **Gate.**
 
-**Phase 2 — Detectors, pricing, property tests.**
+**Phase 2 — Detectors, pricing, property tests.** ✅ *(complete)*
 - Implement `complement`, `negrisk_basket`, `dependency`; `pricing/fees.py`, `pricing/sizing.py`; `resolution/relations.py` seed graph.
 - Property-based tests (`hypothesis`) prove: complement/basket/dependency profit formulas are correct across random price vectors; "no false positive" (never flags a non-arb); NegRisk-convert-is-not-arb invariant; fee threshold monotonicity.
 - **DoD:** all detector + math tests pass, including property tests. **Gate.**
 
-**Phase 3 — Engine, filters, sinks (the working dry-run scanner).**
+**Phase 3 — Engine, filters, sinks (the working dry-run scanner).** ✅ *(complete)*
 - `engine/scanner.py` async loop: discover candidate events via Gamma → stream/read books via CLOB/ws → run detectors → apply `filters` (fee/size/resolution/dedupe) → `ranking` → `sinks/store` (SQLite) + structured log + optional notifier.
 - `cli.py scan --dry-run` (the default) produces a live, ranked, net-of-fees opportunity feed and writes to SQLite. No order code runs.
 - **DoD:** a real `scan --dry-run` against the live read-only API runs for several minutes, logs ranked opportunities (or a clean "none over threshold"), and persists them. **Gate.**
 
-**Phase 4 — Hardening, container, analytics.**
+**Phase 4 — Hardening, container, analytics.** ✅ *(complete)*
 - `Dockerfile` + `docker-compose.yml` (a long-running `scan` service); optional Prometheus `/metrics`; graceful shutdown; structured-log polish.
 - `cli.py backtest`/`replay` over stored opportunities (hit rate, would-be P&L, time-to-resolution distribution, by detector/category). `README.md` with run + deploy instructions.
 - **DoD:** `docker compose up` runs the scanner; backtest command produces a summary over the SQLite history. **Gate.**
 
-**Phase 5 — Execution module (SCAFFOLD ONLY, default OFF). Do not enable.**
+**Phase 5 — Execution module (SCAFFOLD ONLY, default OFF). Do not enable.** ⬜ *(not built — guard.py/executor.py not yet created)*
 - `execution/guard.py`: refuses unless `EXECUTION_ENABLED=true`, enforces a max-notional-per-trade cap and a global kill-switch, and requires an interactive `yes` confirmation per trade. `execution/executor.py`: multi-leg submission via `polymarket-client` (the unified `py-sdk`; `py-clob-client` is archived), callable **only** through the guard, with FOK/IOC order types to minimize leg risk, and a `--paper` mode note (since there's no testnet, real paper = tiny live orders).
 - Loud warnings in code + README. The default `scan` path must remain execution-free.
 - **DoD:** with `EXECUTION_ENABLED` unset, the executor cannot run and tests assert that. Leave it disabled. **Gate — then we stop and decide together whether to ever turn it on.**
