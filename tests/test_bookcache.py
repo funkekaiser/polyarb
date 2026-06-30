@@ -436,8 +436,8 @@ class TestIntegrityCheck:
             )
         )
         assert TOKEN_A in cache.stale_tokens
-        # Fresh snapshot should clear it
-        cache.apply(_book_event())
+        # A fresh snapshot (with a new hash, as a real one has) clears it.
+        cache.apply(_book_event(hash_="fresh_snapshot_hash"))
         assert TOKEN_A not in cache.stale_tokens
 
     def test_delta_to_unknown_token_flags_stale_no_book(self) -> None:
@@ -706,3 +706,97 @@ class TestFixtureReplay:
             if changed:
                 any_changed = True
         assert any_changed, "No message in the fixture changed any book"
+
+
+# ===========================================================================
+# 5. seed() — REST resync entry point (websocket phase 2)
+# ===========================================================================
+def _rest_book(token_id: str = TOKEN_A, bid: str = "0.30", ask: str = "0.70") -> OrderBook:
+    return OrderBook.model_validate(
+        {
+            "market": MARKET_A,
+            "asset_id": token_id,
+            "timestamp": 1234,
+            "bids": [{"price": bid, "size": "500"}],
+            "asks": [{"price": ask, "size": "500"}],
+        }
+    )
+
+
+class TestSeed:
+    def test_seed_populates_unknown_token(self) -> None:
+        cache = OrderBookCache()
+        cache.seed(_rest_book(TOKEN_C, bid="0.20", ask="0.80"))
+        ob = cache.book(TOKEN_C)
+        assert ob is not None
+        assert ob.best_bid is not None and ob.best_bid.price == Decimal("0.20")
+        assert ob.best_ask is not None and ob.best_ask.price == Decimal("0.80")
+
+    def test_seed_clears_stale_flag(self) -> None:
+        cache = OrderBookCache()
+        # A delta to an unknown token flags it stale (no snapshot to apply to).
+        cache.apply(_price_change_event([_pc_entry(asset_id=TOKEN_C)]))
+        assert TOKEN_C in cache.stale_tokens
+        cache.seed(_rest_book(TOKEN_C))
+        assert TOKEN_C not in cache.stale_tokens
+
+    def test_seed_replaces_existing_levels(self) -> None:
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A))
+        cache.seed(_rest_book(TOKEN_A, bid="0.10", ask="0.90"))
+        ob = cache.book(TOKEN_A)
+        assert ob is not None
+        assert ob.best_bid is not None and ob.best_bid.price == Decimal("0.10")
+
+
+# ===========================================================================
+# 6. A3 hash-revert detection (websocket phase 2)
+# ===========================================================================
+class TestHashRevert:
+    def test_revert_flags_stale(self) -> None:
+        """A book hash that rolls back to an earlier snapshot (A→B→A) flags stale."""
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A, hash_="A"))
+        cache.apply(_book_event(TOKEN_A, hash_="B"))
+        assert TOKEN_A not in cache.stale_tokens
+        cache.apply(_book_event(TOKEN_A, hash_="A"))  # revert
+        assert TOKEN_A in cache.stale_tokens
+
+    def test_monotonic_hashes_not_stale(self) -> None:
+        cache = OrderBookCache()
+        for h in ("A", "B", "C", "D"):
+            cache.apply(_book_event(TOKEN_A, hash_=h))
+        assert TOKEN_A not in cache.stale_tokens
+
+    def test_immediate_repeat_not_revert(self) -> None:
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A, hash_="A"))
+        cache.apply(_book_event(TOKEN_A, hash_="A"))  # echo, not a revert
+        assert TOKEN_A not in cache.stale_tokens
+
+    def test_revert_via_price_change_hash(self) -> None:
+        """A price_change whose hash reverts to an earlier book hash flags stale.
+
+        The delta touches a DEEP level and declares the unchanged top of book, so the
+        top-of-book integrity check passes — isolating the hash-revert as the stale cause.
+        """
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A, hash_="H1"))  # default top: bid 0.40 / ask 0.60
+        cache.apply(_book_event(TOKEN_A, hash_="H2"))
+        # Deep bid (0.10) leaves the top unchanged; declared best_bid/ask match computed.
+        cache.apply(
+            _price_change_event(
+                [
+                    _pc_entry(
+                        asset_id=TOKEN_A,
+                        price="0.10",
+                        size="5",
+                        side="BUY",
+                        hash_="H1",  # reverts to the earlier snapshot
+                        best_bid="0.40",
+                        best_ask="0.60",
+                    )
+                ]
+            )
+        )
+        assert TOKEN_A in cache.stale_tokens

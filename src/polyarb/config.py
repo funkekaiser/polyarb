@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     # suite is completely unaffected.
     heartbeat_path: Path | None = None
 
+    # --- websocket streaming (WS order-book cache — opt-in; Phase 3 gates on it) ---
+    # When False (the default), the streaming runner is never instantiated and the scan path
+    # is unchanged (REST book reads). When enabled (Phase 3), books are maintained in-memory
+    # from the market-channel websocket with a periodic REST resync safety net.
+    streaming_enabled: bool = False
+    # Cadence (seconds) of the full-depth REST resync that corrects any drift the top-of-book
+    # WS integrity check can't catch (the phase-1 deep-drift mitigation).
+    ws_resync_interval_s: float = 60.0
+    # Cap (seconds) on the exponential reconnect backoff after a WS disconnect.
+    ws_max_backoff_s: float = 30.0
+
 
 def load_settings() -> Settings:
     return Settings()

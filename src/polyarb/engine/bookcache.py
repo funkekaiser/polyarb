@@ -33,6 +33,7 @@ skipped — the cache never raises on bad data.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -40,6 +41,12 @@ from typing import Any
 from polyarb.models import BookLevel, OrderBook
 
 log = logging.getLogger(__name__)
+
+# Max concurrent REST fetches per resync pass (consumed by the streaming runner).
+RESYNC_BATCH_SIZE: int = 20
+
+# Recent per-token book hashes retained for A3 hash-revert detection.
+_HASH_HISTORY_SIZE: int = 8
 
 
 def _dec(value: Any) -> Decimal | None:
@@ -69,8 +76,26 @@ class _TokenState:
     hash: str | None = None
     tick_size: Decimal | None = None
     last_trade_price: Decimal | None = None
+    # Bounded history of recent book hashes for A3 hash-revert detection.
+    hashes: deque[str] = field(default_factory=lambda: deque(maxlen=_HASH_HISTORY_SIZE))
 
     # ------------------------------------------------------------------ helpers
+    def observe_hash(self, h: str) -> bool:
+        """Record book hash ``h``; return True if it is a REVERT — ``h`` matches an
+        EARLIER entry, i.e. the server rolled the book back to a prior snapshot (the
+        #180 corrupt/replay pattern). An immediate repeat of the current last hash is
+        a no-op echo, not a revert. History is bounded, so a very old (evicted) hash
+        is not flagged — conservative by design.
+        """
+        if self.hashes:
+            if h == self.hashes[-1]:
+                return False  # immediate echo of the same state — not a revert
+            if h in self.hashes:
+                self.hashes.append(h)
+                return True
+        self.hashes.append(h)
+        return False
+
     def best_bid_price(self) -> Decimal | None:
         valid = [p for p, s in self.bids.items() if p > 0 and s > 0]
         return max(valid) if valid else None
@@ -159,6 +184,32 @@ class OrderBookCache:
         """Read-only view of the current stale set (does NOT clear it)."""
         return frozenset(self._stale)
 
+    def seed(self, book: OrderBook) -> None:
+        """Replace a token's state from a full REST ``OrderBook`` — the resync entry point.
+
+        The streaming runner's REST safety net calls this to correct full-depth drift that the
+        top-of-book WS integrity check can't catch. Clears the token's stale flag (the REST
+        snapshot is authoritative) and PRESERVES the WS hash history (REST hashes are not part
+        of the WS sequence, so they must not perturb revert detection). Non-positive levels are
+        dropped, matching the validity filter used everywhere else.
+        """
+        bids = {lvl.price: lvl.size for lvl in book.bids if lvl.price > 0 and lvl.size > 0}
+        asks = {lvl.price: lvl.size for lvl in book.asks if lvl.price > 0 and lvl.size > 0}
+        state = _TokenState(
+            market=book.market,
+            timestamp_ms=book.timestamp_ms,
+            bids=bids,
+            asks=asks,
+            hash=book.hash,
+            tick_size=book.tick_size,
+            last_trade_price=book.last_trade_price,
+        )
+        existing = self._state.get(book.asset_id)
+        if existing is not None:
+            state.hashes = existing.hashes
+        self._state[book.asset_id] = state
+        self._stale.discard(book.asset_id)
+
     # ---------------------------------------------------------- event handlers
     def _handle_book(self, event: dict[str, Any]) -> str | None:
         """Full snapshot replacement.  Returns token_id on success."""
@@ -197,9 +248,18 @@ class OrderBookCache:
             tick_size=_dec(event.get("tick_size")),
             last_trade_price=_dec(event.get("last_trade_price")),
         )
+        # Carry the hash history across the snapshot replacement so a revert to an
+        # earlier snapshot stays detectable (A3 hash-revert).
+        existing = self._state.get(asset_id)
+        if existing is not None:
+            state.hashes = existing.hashes
         self._state[asset_id] = state
-        # A fresh snapshot clears any prior stale flag.
+        # A fresh snapshot clears any prior stale flag...
         self._stale.discard(asset_id)
+        # ...but a hash that reverts to an earlier snapshot re-flags it for resync.
+        h = event.get("hash")
+        if h and state.observe_hash(str(h)):
+            self._stale.add(asset_id)
         return str(asset_id)
 
     def _handle_price_change(self, event: dict[str, Any]) -> set[str]:
@@ -251,9 +311,13 @@ class OrderBookCache:
             else:
                 book_side[price] = size
 
-            # Update timestamp and hash.
+            # Update timestamp and hash; a hash-revert flags the token for resync (A3).
             state.timestamp_ms = ts
-            state.hash = entry.get("hash") or state.hash
+            entry_hash = entry.get("hash")
+            if entry_hash:
+                state.hash = str(entry_hash)
+                if state.observe_hash(str(entry_hash)):
+                    self._stale.add(asset_id)
 
             # Integrity check: compare declared best_bid/best_ask to computed.
             declared_bb_raw = entry.get("best_bid", "")
