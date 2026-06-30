@@ -64,6 +64,29 @@ def _dec_strict(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+def _declared_side_mismatch(raw: Any, computed: Decimal | None) -> bool:
+    """True if a ``price_change`` entry's asserted top-of-book for one side disagrees with ours.
+
+    ``raw`` is the entry's ``best_bid``/``best_ask`` AFTER the change:
+      - blank / absent / unparseable → the entry asserts nothing → never a mismatch.
+      - a strictly-positive value → server asserts that best price → mismatch if ours differs.
+      - ``0`` (≤0) → server asserts the side is EMPTY → mismatch iff we still hold a quote.
+
+    The 0-as-empty case is SYMMETRIC (committee fix): server-says-empty while we hold a level is
+    a real divergence (a missed level-removal that would fabricate an arb), just as
+    server-says-0.40 while we hold None is. We only suppress when both agree the side is empty —
+    that was the spurious-stale case the old strictly-positive-only guard was added for.
+    """
+    if raw is None or raw == "":
+        return False
+    declared = _dec(raw)
+    if declared is None:
+        return False
+    if declared > 0:
+        return computed != declared
+    return computed is not None
+
+
 @dataclass
 class _TokenState:
     """Mutable per-token state.  Never exposed directly; only materialised as
@@ -188,11 +211,20 @@ class OrderBookCache:
         """Replace a token's state from a full REST ``OrderBook`` — the resync entry point.
 
         The streaming runner's REST safety net calls this to correct full-depth drift that the
-        top-of-book WS integrity check can't catch. Clears the token's stale flag (the REST
-        snapshot is authoritative) and PRESERVES the WS hash history (REST hashes are not part
-        of the WS sequence, so they must not perturb revert detection). Non-positive levels are
-        dropped, matching the validity filter used everywhere else.
+        top-of-book WS integrity check can't catch. PRESERVES the WS hash history (REST hashes are
+        not part of the WS sequence, so they must not perturb revert detection). Non-positive
+        levels are dropped, matching the validity filter used everywhere else.
+
+        **Last-write-wins (committee fix):** a REST `/book` request takes ~100-300 ms; in that
+        window the WS may have applied a NEWER delta to this token. The REST snapshot reflects an
+        EARLIER server state, so blindly replacing would resurrect levels the WS already removed
+        (a fabricated arb). If the cache already holds strictly-newer state (by last-change
+        ``timestamp_ms``), keep it and leave the stale flag for the next resync; otherwise the REST
+        snapshot is authoritative — replace and clear stale.
         """
+        existing = self._state.get(book.asset_id)
+        if existing is not None and existing.timestamp_ms > book.timestamp_ms:
+            return  # cache holds newer WS state than this REST snapshot — don't regress it
         bids = {lvl.price: lvl.size for lvl in book.bids if lvl.price > 0 and lvl.size > 0}
         asks = {lvl.price: lvl.size for lvl in book.asks if lvl.price > 0 and lvl.size > 0}
         state = _TokenState(
@@ -204,7 +236,6 @@ class OrderBookCache:
             tick_size=book.tick_size,
             last_trade_price=book.last_trade_price,
         )
-        existing = self._state.get(book.asset_id)
         if existing is not None:
             state.hashes = existing.hashes
         self._state[book.asset_id] = state
@@ -319,24 +350,12 @@ class OrderBookCache:
                 if state.observe_hash(str(entry_hash)):
                     self._stale.add(asset_id)
 
-            # Integrity check: compare declared best_bid/best_ask to computed.
-            declared_bb_raw = entry.get("best_bid", "")
-            declared_ba_raw = entry.get("best_ask", "")
-            if declared_bb_raw != "" or declared_ba_raw != "":
-                declared_bb = _dec(declared_bb_raw) if declared_bb_raw not in ("", None) else None
-                declared_ba = _dec(declared_ba_raw) if declared_ba_raw not in ("", None) else None
-                computed_bb = state.best_bid_price()
-                computed_ba = state.best_ask_price()
-                # A declared best of 0 (or blank) is a "no quote on this side" sentinel, not a
-                # real price — only compare a strictly-positive declared best, else an emptied
-                # side (server sends best_bid="0") spuriously mismatches our computed None.
-                mismatch = False
-                if declared_bb is not None and declared_bb > 0 and computed_bb != declared_bb:
-                    mismatch = True
-                if declared_ba is not None and declared_ba > 0 and computed_ba != declared_ba:
-                    mismatch = True
-                if mismatch:
-                    self._stale.add(asset_id)
+            # Integrity check (top-of-book): a delta carries best_bid/best_ask AFTER the change;
+            # if our computed best disagrees we missed an earlier delta → flag stale for resync.
+            if _declared_side_mismatch(
+                entry.get("best_bid"), state.best_bid_price()
+            ) or _declared_side_mismatch(entry.get("best_ask"), state.best_ask_price()):
+                self._stale.add(asset_id)
 
             changed.add(asset_id)
 

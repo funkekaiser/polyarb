@@ -712,11 +712,12 @@ class TestFixtureReplay:
 # 5. seed() — REST resync entry point (websocket phase 2)
 # ===========================================================================
 def _rest_book(token_id: str = TOKEN_A, bid: str = "0.30", ask: str = "0.70") -> OrderBook:
+    # Newer than _book_event's default last-change ts so seed() (last-write-wins) applies it.
     return OrderBook.model_validate(
         {
             "market": MARKET_A,
             "asset_id": token_id,
-            "timestamp": 1234,
+            "timestamp": 2000000000000,
             "bids": [{"price": bid, "size": "500"}],
             "asks": [{"price": ask, "size": "500"}],
         }
@@ -747,6 +748,43 @@ class TestSeed:
         ob = cache.book(TOKEN_A)
         assert ob is not None
         assert ob.best_bid is not None and ob.best_bid.price == Decimal("0.10")
+
+    def test_seed_does_not_regress_newer_ws_state(self) -> None:
+        """Committee fix: a slow REST snapshot (older last-change ts) must NOT clobber newer
+        WS state — else it resurrects levels the WS already removed (a fabricated arb)."""
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A, ts="2000", bids=[{"price": "0.50", "size": "100"}]))
+        # An older REST snapshot lands late.
+        stale_rest = OrderBook.model_validate(
+            {
+                "market": MARKET_A,
+                "asset_id": TOKEN_A,
+                "timestamp": 1000,
+                "bids": [{"price": "0.40", "size": "100"}],
+                "asks": [],
+            }
+        )
+        cache.seed(stale_rest)
+        ob = cache.book(TOKEN_A)
+        assert ob is not None and ob.best_bid is not None
+        assert ob.best_bid.price == Decimal("0.50")  # newer WS state kept
+
+    def test_seed_replaces_when_rest_at_least_as_new(self) -> None:
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A, ts="1000", bids=[{"price": "0.50", "size": "100"}]))
+        fresh_rest = OrderBook.model_validate(
+            {
+                "market": MARKET_A,
+                "asset_id": TOKEN_A,
+                "timestamp": 2000,
+                "bids": [{"price": "0.40", "size": "100"}],
+                "asks": [],
+            }
+        )
+        cache.seed(fresh_rest)
+        ob = cache.book(TOKEN_A)
+        assert ob is not None and ob.best_bid is not None
+        assert ob.best_bid.price == Decimal("0.40")  # newer REST snapshot applied
 
 
 # ===========================================================================
@@ -810,6 +848,20 @@ class TestNullSafety:
             )
         )
         assert TOKEN_A not in cache.stale_tokens
+
+    def test_declared_empty_side_while_holding_quote_flags_stale(self) -> None:
+        """Committee fix (empty-side asymmetry): server declares best_bid='0' (bids empty) while
+        we still hold a bid (we missed the removal delta) → real divergence → flag stale."""
+        cache = OrderBookCache()
+        cache.apply(_book_event(TOKEN_A))  # bid 0.40 / ask 0.60
+        # Delta touches the ASK (matching declared best_ask) but declares bids empty; our cached
+        # bid 0.40 was never removed → server-empty vs we-hold-a-quote → mismatch.
+        cache.apply(
+            _price_change_event(
+                [_pc_entry(price="0.55", size="10", side="SELL", best_bid="0", best_ask="0.55")]
+            )
+        )
+        assert TOKEN_A in cache.stale_tokens
 
 
 class TestHashRevertExtra:
