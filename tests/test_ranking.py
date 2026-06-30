@@ -111,6 +111,20 @@ def test_invalid_live_count_clamped_to_neutral() -> None:
     assert ranked[0] is fully_live
 
 
+def test_rank_uses_conservative_decision_size() -> None:
+    """C1-atomicity-use: ranking sorts on the conservative decision size, so a deep-but-thin-top
+    opp (huge executable, tiny best-level) ranks BELOW a genuinely fully-fillable smaller one."""
+    # Phantom-deep: executable 1000 but only 5 fillable at the top → decision_net ~ 5*0.10.
+    phantom = _opp(net="0.10", size="1000", risk=ResolutionRisk.OBJECTIVE)
+    phantom.conservative_size = Decimal(5)
+    # Genuinely deep-flat: executable 50, all 50 fillable at the top → decision_net ~ 50*0.10.
+    real = _opp(net="0.10", size="50", risk=ResolutionRisk.OBJECTIVE)
+    real.conservative_size = Decimal(50)
+    ranked = rank([phantom, real])
+    assert ranked[0] is real  # the truly-fillable opp wins, despite smaller executable_size
+    assert ranked[1] is phantom
+
+
 def test_riskwt_never_reorders_bigger_dollar_opp() -> None:
     """A1-riskwt: a near-fully-resolved basket must NEVER rank above a bigger-$ opp
     in the same risk tier. The absolute-$ axis dominates the live-fraction tiebreak."""

@@ -15,6 +15,7 @@ def _opp(
     bps: str = "200",
     cost: str = "0.90",
     size: str = "100",
+    conservative: str | None = None,
     risk: ResolutionRisk = ResolutionRisk.OBJECTIVE,
     conditions: list[str] | None = None,
 ) -> Opportunity:
@@ -30,9 +31,26 @@ def _opp(
         net_profit=Decimal("0.10"),
         net_profit_bps=Decimal(bps),
         executable_size=Decimal(size),
+        conservative_size=Decimal(conservative) if conservative is not None else None,
         realizes="instant",
         resolution_risk=risk,
     )
+
+
+def test_notional_gate_uses_conservative_size() -> None:
+    """C1-atomicity-use: a fat executable_size that clears $50 is REJECTED when the conservative
+    (best-level) size is sub-floor — phantom deep depth can't fake the MIN_NOTIONAL gate."""
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(50)))
+    # executable 1000 * 0.90 = $900 (passes optimistically); conservative 5 * 0.90 = $4.50 (fails).
+    assert filt.apply([_opp(size="1000", conservative="5", cost="0.90")]) == []
+    assert filt.stats.below_notional == 1
+
+
+def test_notional_gate_zero_conservative_rejected_not_fallback() -> None:
+    """is-None correctness: a Decimal(0) conservative size must NOT fall back to optimistic."""
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(50)))
+    assert filt.apply([_opp(size="1000", conservative="0")]) == []
+    assert filt.stats.below_notional == 1
 
 
 def _settings(**kw: object) -> Settings:

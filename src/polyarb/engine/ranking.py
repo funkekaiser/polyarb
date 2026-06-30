@@ -55,10 +55,12 @@ def _sort_key(opp: Opportunity) -> tuple[int, Decimal, Decimal, Decimal]:
     annualized = (
         _INSTANT_ANNUALIZED if opp.realizes == "instant" else (opp.annualized or Decimal(0))
     )
-    # Negate the "more is better" axes so ascending sort puts the best first.
+    # Negate the "more is better" axes so ascending sort puts the best first. The $-axis uses
+    # the conservative decision_net_profit (C1-atomicity-use) so winner's-curse tail-inflated
+    # size can't float an unfillable opp to the top; the optimistic total stays surfaced.
     return (
         risk_rank(opp.resolution_risk),
-        -opp.total_net_profit,
+        -opp.decision_net_profit,
         -annualized,
         _live_fraction_key(opp),
     )

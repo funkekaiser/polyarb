@@ -335,5 +335,26 @@ class Opportunity(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_net_profit(self) -> Decimal:
-        """Net dollars after the per-execution gas cost, across executable_size."""
+        """Net dollars after gas across the OPTIMISTIC ``executable_size`` (displayed ceiling)."""
         return self.executable_size * self.net_profit - self.gas
+
+    @property
+    def decision_size(self) -> Decimal:
+        """Size the MIN_NOTIONAL gate and the $-rank act on (C1-atomicity-use, committee 2026-07).
+
+        The conservative best-level depth — the sets you can plausibly grab in ONE marketable
+        sweep of every leg's top level — when a detector computed it, else the optimistic
+        ``executable_size`` as a fallback. Multi-leg fills aren't atomic and edges vanish fast, so
+        the optimistic full depth-walk over-states realizable notional (~200x in thin-top books);
+        deciding on the floor keeps the MIN_NOTIONAL gate honest and the rank winner's-curse-free.
+        The optimistic ceiling stays surfaced via ``executable_size``/``total_net_profit``.
+
+        Uses ``is None`` — never ``conservative_size or ...`` — because a genuine ``Decimal(0)``
+        conservative size (can't fill even one set) is falsy and must NOT fall back to optimistic.
+        """
+        return self.executable_size if self.conservative_size is None else self.conservative_size
+
+    @property
+    def decision_net_profit(self) -> Decimal:
+        """Net dollars after gas across :attr:`decision_size` — the rank's money axis (C1)."""
+        return self.decision_size * self.net_profit - self.gas

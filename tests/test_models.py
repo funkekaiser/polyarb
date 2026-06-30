@@ -6,7 +6,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-from polyarb.models import Event, Market, OrderBook
+from polyarb.models import DetectorKind, Event, Market, Opportunity, OrderBook
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -252,3 +252,41 @@ def test_opportunity_live_count_total_count_set() -> None:
     )
     assert opp.live_count == 3
     assert opp.total_count == 5
+
+
+def _decision_opp(executable: str, conservative: str | None) -> Opportunity:
+    return Opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="t",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal("0.90"),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal("0.10"),
+        net_profit_bps=Decimal("100"),
+        executable_size=Decimal(executable),
+        conservative_size=Decimal(conservative) if conservative is not None else None,
+        realizes="instant",
+    )
+
+
+def test_decision_size_uses_conservative_when_set() -> None:
+    """C1-atomicity-use: decision_size is the conservative best-level size when present."""
+    opp = _decision_opp(executable="1000", conservative="5")
+    assert opp.decision_size == Decimal(5)
+    assert opp.decision_net_profit == Decimal(5) * opp.net_profit - opp.gas
+    # The optimistic ceiling is still surfaced.
+    assert opp.total_net_profit == Decimal(1000) * opp.net_profit - opp.gas
+
+
+def test_decision_size_falls_back_to_executable_when_none() -> None:
+    opp = _decision_opp(executable="1000", conservative=None)
+    assert opp.decision_size == Decimal(1000)
+
+
+def test_decision_size_zero_conservative_is_not_fallback() -> None:
+    """is-None correctness: Decimal(0) is falsy but must NOT fall back to the optimistic size."""
+    opp = _decision_opp(executable="1000", conservative="0")
+    assert opp.decision_size == Decimal(0)

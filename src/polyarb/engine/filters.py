@@ -83,7 +83,10 @@ class OpportunityFilter:
             self.stats.below_profit += 1
             return False
 
-        notional = opp.executable_size * opp.cost
+        # Gate on the conservative decision size (C1-atomicity-use): never let phantom deep
+        # depth fake the MIN_NOTIONAL floor. Falls back to executable_size when a detector
+        # didn't compute a conservative size. See Opportunity.decision_size.
+        notional = opp.decision_size * opp.cost
         if notional < s.min_notional_usdc:
             self.stats.below_notional += 1
             return False
