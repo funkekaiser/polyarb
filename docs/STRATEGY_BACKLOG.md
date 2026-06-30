@@ -129,8 +129,10 @@ depend on it.** This is its own body of work, not a quick add.
 hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/small-edge tier
 **deferred** (see "Strategy direction" above — recon-killed for now). Work the items below in order.
 
-1. **Notifier wiring (ntfy)** — *quick.* `NOTIFIER=ntfy` + a long-random topic in compose env so
-   real opps actually alert (spec's "→ alert" is otherwise silent). Pending Jonathan's topic.
+1. **Notifier wiring (Discord)** — *built.* `DiscordNotifier` (formatted embed) shipped; set
+   `NOTIFIER=discord` + `NOTIFIER_URL=<channel webhook>` in the compose env so real opps actually
+   alert (spec's "→ alert" is otherwise silent). Pending only Jonathan's Discord webhook URL.
+   (ntfy/telegram deferred — fall back to `none`.)
 2. **Dependency-relation workflow** — *the big near-term build.* Auto-**propose** candidate
    relations from market *structure* (temporal/numeric ladders, nesting DAGs — never free-text),
    **verify** each (resolution-fingerprint + adversarial committee hunting an A∧¬B scenario), then

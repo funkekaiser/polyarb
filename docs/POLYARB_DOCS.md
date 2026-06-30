@@ -139,11 +139,12 @@ into the image. The source of truth is `src/polyarb/config.py`.
 | `EXCLUDE_AT_RISK_RESOLUTION` | `true` | Drop opportunities whose resolution source is flagged high-risk. |
 | `MAX_BOOK_AGE_S` | `900` | Drop order books whose CLOB timestamp is older than this (seconds). `0` disables the staleness gate. |
 | `ENABLE_PARTIAL_BASKETS` | `false` | Opt-in: emit partial NegRisk baskets as tagged directional (non-structural) opportunities. |
-| `NOTIFIER` | `none` | Alert sink: `none`, `webhook`, `ntfy`, `discord`, or `telegram`. |
-| `NOTIFIER_URL` | _(empty)_ | URL for the alert sink when `NOTIFIER` is not `none`. |
+| `NOTIFIER` | `none` | Alert sink. Implemented: `none`, `webhook` (raw opportunity JSON), `discord` (formatted embed → Discord incoming webhook). `ntfy`/`telegram` are not yet built and silently fall back to `none`. |
+| `NOTIFIER_URL` | _(empty)_ | URL for the alert sink when `NOTIFIER` is `webhook` or `discord` (required for those). For `discord`, the channel's **Integrations → Webhooks** URL. |
 | `SQLITE_PATH` | `polyarb.db` | SQLite DB path. Docker pins this to `/data/polyarb.db`. |
-| `METRICS_ENABLED` | `false` | Expose a Prometheus `/metrics` endpoint. **Docker forces this `true`** for the healthcheck. |
+| `METRICS_ENABLED` | `false` | Expose a Prometheus `/metrics` endpoint. Docker sets this `true` for scraping (the container liveness probe is the heartbeat, not `/metrics`). |
 | `METRICS_PORT` | `9090` | Port for `/metrics` when enabled. |
+| `HEARTBEAT_PATH` | _(empty)_ | When set, `Scanner.run` writes the last-pass timestamp here each pass; `polyarb healthcheck` reads it (Docker's liveness probe). Docker sets `/data/polyarb-heartbeat`. Leave empty for local runs. |
 | `EXECUTION_ENABLED` | `false` | **Leave `false`.** Execution is Phase 5 and not built. |
 
 Example `.env`:
@@ -152,8 +153,8 @@ Example `.env`:
 # .env (git-ignored; copy from .env.example)
 LOG_LEVEL=DEBUG
 MIN_PROFIT_BPS=20
-NOTIFIER=ntfy
-NOTIFIER_URL=https://ntfy.sh/my-polyarb-topic
+NOTIFIER=discord
+NOTIFIER_URL=https://discord.com/api/webhooks/<id>/<token>
 ```
 
 > Real secrets (e.g. `POLYMARKET_PRIVATE_KEY`, only if execution is ever enabled) come from
