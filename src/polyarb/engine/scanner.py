@@ -33,7 +33,7 @@ from polyarb.detectors.partial_basket import PartialBasketDetector
 from polyarb.engine import metrics
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
-from polyarb.models import DetectorKind, Market, Opportunity, OrderBook
+from polyarb.models import DetectorKind, Event, Market, Opportunity, OrderBook
 from polyarb.resolution.relations import (
     POLITICS_NESTING,
     SEED_RELATIONS,
@@ -207,12 +207,12 @@ class Scanner:
         results = await asyncio.gather(*(one(t) for t in token_ids))
         return {t: b for t, b in results if b is not None}
 
-    async def scan_once(self) -> list[Opportunity]:
+    async def _discover(self) -> tuple[list[Event], list[Market], dict[str, Market]]:
+        """Discover active binary markets (capped) and index them by condition_id."""
         s = self._settings
         events = await self._gamma.get_events(
             closed=False, active=True, limit=s.event_discovery_limit
         )
-
         markets: list[Market] = []
         seen: set[str] = set()
         for event in events:
@@ -228,24 +228,45 @@ class Scanner:
                     seen.add(market.condition_id)
         markets = markets[: s.max_markets_per_scan]
         by_condition: dict[str, Market] = {m.condition_id: m for m in markets}
+        return events, markets, by_condition
 
-        token_ids: set[str] = set()
-        for market in markets:
-            token_ids.update(market.clob_token_ids[:2])
-        now = datetime.now(UTC)  # one reference point for the whole pass (see _fresh_books)
-        fetched = await self._fetch_books(token_ids)
-        books = _fresh_books(fetched, now, s.max_book_age_s)
-        stale_dropped = len(fetched) - len(books)  # accumulates per-event extra drops below
-        log.info(
-            "scan_fetched",
-            events=len(events),
-            markets=len(markets),
-            books=len(books),
-            global_stale_dropped=stale_dropped,  # global only; the pass total is in scan_complete
-        )
+    @staticmethod
+    def _needed_tokens(events: list[Event], markets: list[Market]) -> set[str]:
+        """Every token whose book a detector might read this pass: the capped global markets'
+        tokens plus every multi-outcome event's live binary-constituent tokens (both sides)."""
+        tokens: set[str] = set()
+        for m in markets:
+            tokens.update(m.clob_token_ids[:2])
+        for event in events:
+            if not event.is_multi_outcome:
+                continue
+            for m in event.markets:
+                if (
+                    m.is_binary
+                    and m.clob_token_ids
+                    and m.active
+                    and not m.closed
+                    and m.accepting_orders
+                ):
+                    tokens.update(m.clob_token_ids[:2])
+        return tokens
 
-        gas_fixed, gas_per_leg = await self._resolve_gas()
+    def _detect(
+        self,
+        events: list[Event],
+        markets: list[Market],
+        by_condition: dict[str, Market],
+        books: dict[str, OrderBook],
+        gas_fixed: Decimal,
+        gas_per_leg: Decimal,
+        now: datetime,
+    ) -> list[Opportunity]:
+        """Run every detector against an already-acquired ``books`` dict (no fetching here).
 
+        Shared by the REST path and the streaming path — the only difference between them is
+        where ``books`` comes from (a REST fetch vs the live cache) and, for streaming, the
+        REST-confirm gate applied to the results downstream.
+        """
         opps: list[Opportunity] = []
         global_snap = Snapshot(
             books=books,
@@ -257,31 +278,13 @@ class Scanner:
         )
         opps.extend(self._complement.detect(global_snap))
         opps.extend(self._dependency.detect(global_snap))
-
         for event in events:
             if not event.is_multi_outcome:
                 continue
-            # Fetch books for *live* constituents only (eliminated outcomes are dropped from the
-            # partition). Both tokens: the YES basket uses YES books, the NO-dual uses NO books.
-            needed = {
-                tid
-                for m in event.markets
-                if m.is_binary
-                and m.clob_token_ids
-                and m.active
-                and not m.closed
-                and m.accepting_orders
-                for tid in m.clob_token_ids[:2]
-            } - fetched.keys()  # fetched (not books): a stale global token is already dropped —
-            # don't waste a round-trip re-fetching it just to drop it again.
-            extra = await self._fetch_books(needed) if needed else {}
-            fresh_extra = _fresh_books(extra, now, s.max_book_age_s)
-            stale_dropped += len(extra) - len(fresh_extra)
-            event_books = books | fresh_extra
             for market in event.markets:
                 by_condition.setdefault(market.condition_id, market)
             event_snap = Snapshot(
-                books=event_books,
+                books=books,
                 event=event,
                 gas=gas_fixed,
                 gas_per_leg=gas_per_leg,
@@ -289,23 +292,25 @@ class Scanner:
             )
             opps.extend(self._negrisk.detect(event_snap))
             opps.extend(self._negrisk_dual.detect(event_snap))
-            if s.enable_partial_baskets:  # §5 — opt-in directional, off by default
+            if self._settings.enable_partial_baskets:  # §5 — opt-in directional, off by default
                 opps.extend(self._partial.detect(event_snap))
+        return opps
 
+    async def _emit(
+        self, opps: list[Opportunity], by_condition: dict[str, Market], *, stale_dropped: int
+    ) -> list[Opportunity]:
+        """Risk-tag, filter, rank, persist + notify, and update metrics. Returns the kept opps."""
         for opp in opps:
             opp.resolution_risk = resolution_risk_for(opp, by_condition)
 
-        filt = OpportunityFilter(s, self._dedupe)
+        filt = OpportunityFilter(self._settings, self._dedupe)
         kept = rank(filt.apply(opps))
 
         emitted = 0  # count opps actually PERSISTED, not len(kept) — a store failure shouldn't
-        # inflate the metric exactly when the system is degraded (disk full, SQLite locked) and
-        # accurate monitoring matters most. (Counts after record; notify is best-effort.)
+        # inflate the metric exactly when the system is degraded (disk full, SQLite locked).
         for opp in kept:
-            # Guard each emit independently: a store/notify failure on one opp must not abort
-            # the loop and silently drop the rest (they were already marked "seen" in the
-            # dedupe cache during filtering, so an aborted loop would suppress them for a full
-            # cooldown window).
+            # Guard each emit independently: a store/notify failure on one opp must not abort the
+            # loop and silently drop the rest (already marked "seen" in the dedupe cache).
             try:
                 self._store.record(opp)
                 emitted += 1  # persisted; matches store.count(). notify is best-effort below.
@@ -330,8 +335,6 @@ class Scanner:
         for detector_name, n in candidates_by_detector.items():
             self._totals[f"candidates.{detector_name}"] += n
             metrics.CANDIDATES.labels(detector=detector_name).inc(n)
-        # filt.stats spreads seen / below_profit / below_notional / at_risk / deduped / kept
-        # ("kept" = passed filters; the persisted count is `emitted` in scanner_stopped totals).
         log.info(
             "scan_complete",
             candidates=len(opps),
@@ -340,6 +343,21 @@ class Scanner:
             **vars(filt.stats),
         )
         return kept
+
+    async def scan_once(self) -> list[Opportunity]:
+        """One REST scan pass: discover → fetch books → detect → filter/rank → emit."""
+        events, markets, by_condition = await self._discover()
+        now = datetime.now(UTC)  # one reference point for the whole pass (see _fresh_books)
+        needed = self._needed_tokens(events, markets)
+        fetched = await self._fetch_books(needed)
+        books = _fresh_books(fetched, now, self._settings.max_book_age_s)
+        stale_dropped = len(fetched) - len(books)
+        log.info(
+            "scan_fetched", events=len(events), markets=len(markets), books=len(books)
+        )
+        gas_fixed, gas_per_leg = await self._resolve_gas()
+        opps = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
+        return await self._emit(opps, by_condition, stale_dropped=stale_dropped)
 
     async def run(self, *, passes: int = 0, max_seconds: float | None = None) -> None:
         """Loop ``scan_once`` on the configured interval until done or signalled.
