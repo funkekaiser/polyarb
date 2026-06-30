@@ -326,6 +326,11 @@ class Opportunity(BaseModel):
     days_to_resolution: int | None = None
     annualized: Decimal | None = None
     resolution_risk: str | None = None
+    # A1-riskwt: live legs in the basket vs total binary constituent markets in the event (before
+    # eliminations). Populated by NegRisk detectors; None for all other detector kinds. Defaults
+    # None so every existing construction and the SQLite payload round-trip are unaffected.
+    live_count: int | None = None
+    total_count: int | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

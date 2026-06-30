@@ -202,3 +202,53 @@ def test_yes_index_non_yes_no_pair_fallback() -> None:
     m = _make_binary(["Trump", "Biden"], token_ids=["tok_trump", "tok_biden"])
     assert m.yes_index == 0
     assert m.yes_token_id == "tok_trump"  # index 0 — can't do better without labels
+
+
+def test_opportunity_live_count_total_count_default_none() -> None:
+    """A1-riskwt: live_count/total_count default None; existing Opportunity construction ok."""
+    from decimal import Decimal
+
+    from polyarb.models import DetectorKind, Opportunity
+
+    opp = Opportunity(
+        detector=DetectorKind.COMPLEMENT,
+        description="test",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal("0.90"),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal("0.10"),
+        net_profit_bps=Decimal("100"),
+        executable_size=Decimal(100),
+        realizes="resolution",
+    )
+    assert opp.live_count is None
+    assert opp.total_count is None
+
+
+def test_opportunity_live_count_total_count_set() -> None:
+    """A1-riskwt: live_count/total_count are stored and retrieved correctly."""
+    from decimal import Decimal
+
+    from polyarb.models import DetectorKind, Opportunity
+
+    opp = Opportunity(
+        detector=DetectorKind.NEGRISK_BASKET,
+        description="test",
+        condition_ids=["0x1"],
+        legs=[],
+        cost=Decimal("0.90"),
+        gross_profit=Decimal("0.10"),
+        fees=Decimal(0),
+        gas=Decimal(0),
+        net_profit=Decimal("0.10"),
+        net_profit_bps=Decimal("100"),
+        executable_size=Decimal(100),
+        realizes="resolution",
+        live_count=3,
+        total_count=5,
+    )
+    assert opp.live_count == 3
+    assert opp.total_count == 5

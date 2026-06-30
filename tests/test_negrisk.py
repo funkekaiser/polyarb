@@ -728,3 +728,177 @@ def test_per_leg_gas_suppresses_basket() -> None:
     assert list(NegRiskBasketDetector().detect(hi)) == []
     lo = Snapshot(event=base.event, books=base.books, gas_per_leg=Decimal("3"))
     assert len(list(NegRiskBasketDetector().detect(lo))) == 1
+
+
+# ---------------------------------------------------------------------------
+# D2-RESIDUAL — reversed-outcome markets (["No","Yes"]) classified correctly
+# ---------------------------------------------------------------------------
+
+
+def test_reversed_closed_eliminated_drops_correctly() -> None:
+    """D2-residual: a closed reversed-outcome market (["No","Yes"]) whose YES price (at
+    yes_index=1) is ~0 is correctly identified as ELIMINATED and dropped from the partition.
+
+    Before the fix, live_partition read outcome_prices[0] (the NO price = 1) and incorrectly
+    treated the market as a winner, returning None and skipping the whole event (false negative).
+    After the fix, it reads outcome_prices[yes_index=1] = 0 and correctly drops the market,
+    allowing the 3 remaining live legs to form a basket.
+    """
+    # Reversed market: outcomes=["No","Yes"], outcome_prices=["1","0"].
+    # NO resolved to 1 (won from NO's perspective), YES price = 0 → eliminated.
+    reversed_closed = Market(
+        id="10",
+        condition_id="0xReversed",
+        question="Reversed outcome market?",
+        outcomes=["No", "Yes"],
+        outcome_prices=["1", "0"],  # YES at yes_index=1 is 0 → eliminated
+        clob_token_ids=["rToken0", "rToken1"],
+        neg_risk=True,
+        closed=True,
+    )
+    live_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="Event with reversed-outcome eliminated market",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[reversed_closed, *live_markets],
+    )
+    result = live_partition(event)
+    # The reversed market should be correctly identified as eliminated and dropped.
+    assert result is not None, "live_partition should return the 3 live markets, not None"
+    assert len(result) == 3
+    assert all(m.condition_id != "0xReversed" for m in result)
+
+    # End-to-end: the 3 live markets should form a profitable basket.
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+    opps = list(NegRiskBasketDetector().detect(snap))
+    assert len(opps) == 1
+    assert len(opps[0].legs) == 3
+    assert "0xReversed" not in opps[0].condition_ids
+
+
+def test_reversed_closed_winner_skips_event() -> None:
+    """D2-residual: a closed reversed-outcome market (["No","Yes"]) whose YES price (at
+    yes_index=1) is ~1 is correctly identified as a WINNER and causes the event to be skipped.
+
+    Before the fix, live_partition read outcome_prices[0] (the NO price = 0) and incorrectly
+    treated the market as eliminated (false drop), building a basket over the remaining losers.
+    After the fix, it reads outcome_prices[yes_index=1] = 1 and correctly skips the event.
+    """
+    # Reversed market: outcomes=["No","Yes"], outcome_prices=["0","1"].
+    # NO price = 0 (lost), YES price at yes_index=1 = 1 → this outcome WON.
+    reversed_winner = Market(
+        id="10",
+        condition_id="0xRevWinner",
+        question="Reversed winner market?",
+        outcomes=["No", "Yes"],
+        outcome_prices=["0", "1"],  # YES at yes_index=1 is 1 → winner → skip event
+        clob_token_ids=["rwToken0", "rwToken1"],
+        neg_risk=True,
+        closed=True,
+    )
+    losers = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="Event with reversed-outcome winner",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[reversed_winner, *losers],
+    )
+    # live_partition should return None: the event is decided, cannot form a safe basket.
+    assert live_partition(event) is None
+
+    # End-to-end: no basket should be emitted even with seemingly profitable loser books.
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.05", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+    assert list(NegRiskBasketDetector().detect(snap)) == []
+
+
+def test_canonical_closed_eliminated_unchanged() -> None:
+    """D2-residual: canonical markets (["Yes","No"]) are unaffected by the yes_index fix."""
+    canonical_closed = Market(
+        id="10",
+        condition_id="0xCanonical",
+        question="Canonical closed?",
+        outcomes=["Yes", "No"],
+        outcome_prices=["0", "1"],  # YES at yes_index=0 is 0 → eliminated (canonical)
+        clob_token_ids=["yCan", "nCan"],
+        neg_risk=True,
+        closed=True,
+    )
+    live_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="Canonical eliminated — should behave as before",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[canonical_closed, *live_markets],
+    )
+    result = live_partition(event)
+    assert result is not None
+    assert len(result) == 3
+    assert all(m.condition_id != "0xCanonical" for m in result)
+
+
+# ---------------------------------------------------------------------------
+# A1-RISKWT — live_count / total_count populated by both negrisk detectors
+# ---------------------------------------------------------------------------
+
+
+def test_basket_live_count_total_count_populated() -> None:
+    """A1-riskwt: NegRiskBasketDetector emits live_count and total_count on the opportunity.
+
+    A 4-outcome event with one eliminated market leaves 3 live markets.
+    live_count should be 3 (live partition size); total_count should be 4 (all binary markets
+    in the event, before eliminations).
+    """
+    closed_market = Market(
+        id="10",
+        condition_id="0xClosed",
+        question="Eliminated?",
+        outcomes=["Yes", "No"],
+        outcome_prices=["0", "1"],
+        clob_token_ids=["yClosed", "nClosed"],
+        neg_risk=True,
+        closed=True,
+    )
+    live_markets = [
+        make_market(f"0x{i}", yes=f"y{i}", no=f"n{i}", neg_risk=True, group_item_title=f"O{i}")
+        for i in range(1, 4)
+    ]
+    event = Event(
+        id="9",
+        title="4-outcome event, 1 eliminated",
+        neg_risk=True,
+        enable_neg_risk=True,
+        markets=[closed_market, *live_markets],
+    )
+    books = {f"y{i}": make_book(f"y{i}", asks=[("0.30", "100")]) for i in range(1, 4)}
+    snap = Snapshot(event=event, books=books)
+
+    opps = list(NegRiskBasketDetector().detect(snap))
+    assert len(opps) == 1
+    opp = opps[0]
+    assert opp.live_count == 3  # 3 live markets in partition
+    assert opp.total_count == 4  # 4 binary markets in the event (including eliminated)
+
+
+def test_basket_all_live_count_equals_total() -> None:
+    """A1-riskwt: when no markets are eliminated, live_count == total_count."""
+    snap = _three_outcome_snapshot(["0.30", "0.30", "0.30"])
+    opps = list(NegRiskBasketDetector().detect(snap))
+    assert len(opps) == 1
+    opp = opps[0]
+    assert opp.live_count == 3
+    assert opp.total_count == 3
