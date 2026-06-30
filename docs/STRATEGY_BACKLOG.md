@@ -121,21 +121,48 @@ depend on it.** This is its own body of work, not a quick add.
 
 ---
 
-## Focus (next)
+## Roadmap — ordered execution plan (updated 2026-06-30)
 
-The model-free no-brainers from the C-layer and the four-item review are all **shipped**:
-C3 (rank by $), C1 (dispute gate), D3 (max-leg horizon), B2′ (leg-scaled gas mechanism), and
-C1-atom (conservative-size surface).
+**State:** read-only monitor live in Docker — sensible tier (30 bps / $50), 600-market coverage,
+hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/small-edge tier
+**deferred** (see "Strategy direction" above — recon-killed for now). Work the items below in order.
 
-- **Remaining open, model-free (candidates for further bug-hunt/cleanup):** **A1-stale**,
-  **A1-riskwt**, **A3-quiescence**, **M3-feefloor**, **C4** (backtest upper-bound labelling),
-  **D2/D5/D6/F2** (small hardening). **D1** (fingerprint gate) is open but its absent-fingerprint
-  policy is a **DESK** decision.
-- **On Jonathan's desk (need input, see below):** D1 policy, C1-atomicity-use (which size
-  ranking/notional trust), B2′-num (real gas numbers), A2-void (curated denylist or accept).
-- **Deferred:** **C2** (probabilistic ranking — needs an unmeasurable probability). **§5** stays
-  opt-in / off by default. **E4** (edge-vs-luck test — no probabilistic bets to test yet).
-- **Next real chunk (post-detection):** **Tier E** — build the realized-outcome ledger (**E1**),
-  then the guaranteed-slip alarm (**E2**). This is where evaluation/alerting lives; it's its own
-  workstream, not a quick add. Wiring a notifier (currently `none`) is the cheap prerequisite for
-  E2's alerts.
+1. **Notifier wiring (ntfy)** — *quick.* `NOTIFIER=ntfy` + a long-random topic in compose env so
+   real opps actually alert (spec's "→ alert" is otherwise silent). Pending Jonathan's topic.
+2. **Dependency-relation workflow** — *the big near-term build.* Auto-**propose** candidate
+   relations from market *structure* (temporal/numeric ladders, nesting DAGs — never free-text),
+   **verify** each (resolution-fingerprint + adversarial committee hunting an A∧¬B scenario), then
+   **register only verified** ones. Activates the dormant dependency detector with no manual
+   curation. Resolves **D1** (fingerprint policy) as part of it. Gate + committee before commit.
+3. **Websocket streaming** — wire `ws.py` into the scan loop (in-memory books from deltas):
+   real-time detection + far less CPU/IO than re-fetching ~924 books/pass. The only way to catch
+   instant transients. After #2.
+4. **False-positive hardening** — A3-quiescence (#180 corrupt 0.01/0.99 pattern), A1-stale, per-leg
+   min-order-size (D5), A1-riskwt, M3-feefloor. Quality now, *and* the prerequisite for revisiting
+   the small-edge tier.
+5. **Realized-outcome ledger (E1) → guaranteed-slip alarm (E2)** — the evaluation layer (did
+   "guaranteed" really pay?). Its own workstream.
+
+**Deferred:** small-edge tier (needs #3+#4+execution), **C2** (probabilistic ranking), **§5**
+(opt-in/off), **E4** (no probabilistic bets yet). **Desk decisions still open:** D1 (handled in #2),
+C1-atom-use, B2′-num / gas-wallet path, A2-void.
+
+### Dependency-workflow design seed (from subsystem mapping, 2026-06-30)
+
+So #2 can be built without re-mapping:
+- **The generators are DONE and already enforce the §6 fingerprint gate — do NOT rebuild them.**
+  `generate_ladder_relations(tags)` + `generate_dag_relations(tags, edges)` turn `MarketTags` into
+  safe `Relation`s. **The only missing piece is a PROPOSER** reading live `Event`/`Market` →
+  emitting `MarketTags`. (`TAG_REGISTRY`/`SEED_RELATIONS` start empty → detector is dormant.)
+- **Start with BY_DATE temporal ladders:** `Market.end_date` is a structured field → `bound`
+  directly; earlier deadline = antecedent. Safest, zero text inference.
+- **Hardest sub-problem — `resolution_fingerprint`:** there is NO API field for it; two markets
+  only ladder if fingerprints match. Derive a conservative fingerprint (underlying + settlement
+  source/cutoff) AND gate every proposed pair through an **adversarial committee** that attests
+  "same resolution + A⇒B truly holds" (hunts an A∧¬B scenario). Reject on any doubt.
+- **Threshold ladders** (GTE/LTE) need parsing `group_item_title`/`question` (borderline text) —
+  do AFTER BY_DATE, with the committee as the safety net.
+- **D1:** the proposer→generator path is naturally gated; the only bypass is hand-called
+  `add_relation()` (no fingerprint arg). Either enforce a fingerprint there or never hand-call it.
+- **Persistence:** registries are in-process (reset per run) — add a store so verified tags
+  survive restarts. Consumer `dependency.py` TRUSTS direction — correctness is 100% the proposer's.
