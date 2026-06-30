@@ -168,13 +168,17 @@ def walk_buy_legs(
 
 def walk_sell_legs(
     leg_levels: list[list[BookLevel]],
-    fee_rate: Decimal,
+    fee_rate: Decimal | Sequence[Decimal],
     collateral: Decimal = ONE,
 ) -> tuple[Decimal, list[Decimal], Decimal]:
     """Size a 'split `collateral` into one share of each leg, sell each at bids' arb.
 
     Fill each leg's bids best-first (DESCENDING price). The s-th set's proceeds = sum of the
     s-th-best bid across legs; include while proceeds - marginal_fee > collateral (strictly).
+
+    ``fee_rate`` may be a single rate applied to every leg, or a per-leg sequence (one rate
+    per leg, in ``leg_levels`` order) when legs span different markets/fee categories. A
+    per-leg sequence whose length differs from the number of legs is a programming error.
 
     Returns (size, per_leg_proceeds, total_fees):
       size             = total sets includable
@@ -183,6 +187,7 @@ def walk_sell_legs(
     Empty/unprofitable → (ZERO, [ZERO]*len(legs), ZERO).
     """
     n_legs = len(leg_levels)
+    rates = _per_leg_rates(fee_rate, n_legs)
     zero_result: tuple[Decimal, list[Decimal], Decimal] = (ZERO, [ZERO] * n_legs, ZERO)
     if n_legs == 0:
         return zero_result  # no legs → nothing to size (mirror walk_buy_legs)
@@ -211,7 +216,7 @@ def walk_sell_legs(
             break
 
         prices = [sorted_legs[i][idx[i]].price for i in range(n_legs)]
-        marginal_fee = sum((taker_fee(p, ONE, fee_rate) for p in prices), ZERO)
+        marginal_fee = sum((taker_fee(prices[i], ONE, rates[i]) for i in range(n_legs)), ZERO)
 
         # Include this price slice only while proceeds strictly exceed collateral + fees.
         if sum(prices, ZERO) - marginal_fee <= collateral:

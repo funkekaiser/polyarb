@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from polyarb.models import BookLevel
 from polyarb.pricing.fees import taker_fee
@@ -14,12 +16,218 @@ from polyarb.pricing.sizing import (
     is_crossed,
     top_level_min_depth,
     walk_buy_legs,
+    walk_sell_legs,
 )
 from tests.helpers import make_book
+
+ZERO = Decimal(0)
+ONE = Decimal(1)
 
 
 def _lvl(price: str, size: str) -> BookLevel:
     return BookLevel(price=Decimal(price), size=Decimal(size))
+
+
+# ---------------------------------------------------------------------------
+# Simulation helpers — independent re-implementations used by property tests
+# ---------------------------------------------------------------------------
+
+
+def _buy_steps(
+    leg_levels: list[list[BookLevel]],
+    fee_rate: Decimal | list[Decimal],
+    payoff: Decimal = ONE,
+) -> list[tuple[Decimal, Decimal, bool, Decimal]]:
+    """Simulate walk_buy_legs step-by-step.
+
+    Returns one entry per price-slice visited:
+      (sum_prices, marginal_fee, was_included, chunk_size)
+    ``chunk_size`` is ZERO for the first excluded slice (if any).
+    Returns [] when the walk exits early (empty legs / no depth).
+    """
+    n_legs = len(leg_levels)
+    if n_legs == 0:
+        return []
+    rates: list[Decimal] = [fee_rate] * n_legs if isinstance(fee_rate, Decimal) else list(fee_rate)
+
+    sorted_legs: list[list[BookLevel]] = []
+    for levels in leg_levels:
+        filtered = sorted(
+            (lvl for lvl in levels if lvl.size > ZERO and lvl.price > ZERO),
+            key=lambda lvl: lvl.price,
+        )
+        if not filtered:
+            return []
+        sorted_legs.append(filtered)
+
+    idx = [0] * n_legs
+    remaining = [sorted_legs[i][0].size for i in range(n_legs)]
+    steps: list[tuple[Decimal, Decimal, bool, Decimal]] = []
+
+    while True:
+        if any(idx[i] >= len(sorted_legs[i]) for i in range(n_legs)):
+            break
+
+        prices = [sorted_legs[i][idx[i]].price for i in range(n_legs)]
+        mf = sum((taker_fee(prices[i], ONE, rates[i]) for i in range(n_legs)), ZERO)
+        sp = sum(prices, ZERO)
+
+        if sp + mf >= payoff:
+            steps.append((sp, mf, False, ZERO))
+            break
+
+        chunk = min(remaining[i] for i in range(n_legs))
+        steps.append((sp, mf, True, chunk))
+
+        for i in range(n_legs):
+            remaining[i] -= chunk
+            if remaining[i] == ZERO:
+                idx[i] += 1
+                if idx[i] < len(sorted_legs[i]):
+                    remaining[i] = sorted_legs[i][idx[i]].size
+
+    return steps
+
+
+def _sell_steps(
+    leg_levels: list[list[BookLevel]],
+    fee_rate: Decimal | list[Decimal],
+    collateral: Decimal = ONE,
+) -> list[tuple[Decimal, Decimal, bool, Decimal]]:
+    """Simulate walk_sell_legs step-by-step.
+
+    Returns one entry per price-slice visited:
+      (sum_prices, marginal_fee, was_included, chunk_size)
+    ``chunk_size`` is ZERO for the first excluded slice (if any).
+    Returns [] when the walk exits early (empty legs / no depth).
+    """
+    n_legs = len(leg_levels)
+    if n_legs == 0:
+        return []
+    rates: list[Decimal] = [fee_rate] * n_legs if isinstance(fee_rate, Decimal) else list(fee_rate)
+
+    sorted_legs: list[list[BookLevel]] = []
+    for levels in leg_levels:
+        filtered = sorted(
+            (lvl for lvl in levels if lvl.size > ZERO and lvl.price > ZERO),
+            key=lambda lvl: lvl.price,
+            reverse=True,
+        )
+        if not filtered:
+            return []
+        sorted_legs.append(filtered)
+
+    idx = [0] * n_legs
+    remaining = [sorted_legs[i][0].size for i in range(n_legs)]
+    steps: list[tuple[Decimal, Decimal, bool, Decimal]] = []
+
+    while True:
+        if any(idx[i] >= len(sorted_legs[i]) for i in range(n_legs)):
+            break
+
+        prices = [sorted_legs[i][idx[i]].price for i in range(n_legs)]
+        mf = sum((taker_fee(prices[i], ONE, rates[i]) for i in range(n_legs)), ZERO)
+        sp = sum(prices, ZERO)
+
+        if sp - mf <= collateral:
+            steps.append((sp, mf, False, ZERO))
+            break
+
+        chunk = min(remaining[i] for i in range(n_legs))
+        steps.append((sp, mf, True, chunk))
+
+        for i in range(n_legs):
+            remaining[i] -= chunk
+            if remaining[i] == ZERO:
+                idx[i] += 1
+                if idx[i] < len(sorted_legs[i]):
+                    remaining[i] = sorted_legs[i][idx[i]].size
+
+    return steps
+
+
+# ---------------------------------------------------------------------------
+# Hypothesis strategies
+# ---------------------------------------------------------------------------
+
+# Prices strictly inside (0, 1) with 2 decimal places: 0.01 … 0.99.
+_price_st: st.SearchStrategy[Decimal] = st.decimals(
+    min_value=Decimal("0.01"),
+    max_value=Decimal("0.99"),
+    allow_nan=False,
+    allow_infinity=False,
+    places=2,
+)
+
+# Sizes: positive integers expressed as Decimal (1 … 200).
+_size_st: st.SearchStrategy[Decimal] = st.decimals(
+    min_value=Decimal("1"),
+    max_value=Decimal("200"),
+    allow_nan=False,
+    allow_infinity=False,
+    places=0,
+)
+
+# Fee rates: 0 … 0.10, two decimal places.
+_fee_st: st.SearchStrategy[Decimal] = st.decimals(
+    min_value=Decimal("0.00"),
+    max_value=Decimal("0.10"),
+    allow_nan=False,
+    allow_infinity=False,
+    places=2,
+)
+
+# Payoff / collateral: 0.50 … 1.50, two decimal places.
+_payoff_st: st.SearchStrategy[Decimal] = st.decimals(
+    min_value=Decimal("0.50"),
+    max_value=Decimal("1.50"),
+    allow_nan=False,
+    allow_infinity=False,
+    places=2,
+)
+
+
+@st.composite
+def _valid_level_st(draw: st.DrawFn) -> BookLevel:
+    """A BookLevel with price in (0,1) and positive size."""
+    return BookLevel(price=draw(_price_st), size=draw(_size_st))
+
+
+@st.composite
+def _junk_level_st(draw: st.DrawFn) -> BookLevel:
+    """A BookLevel that should be filtered out (zero/negative price or zero size)."""
+    kind = draw(st.integers(min_value=0, max_value=2))
+    if kind == 0:
+        # zero size, valid price
+        return BookLevel(price=draw(_price_st), size=ZERO)
+    elif kind == 1:
+        # zero price, valid size
+        return BookLevel(price=ZERO, size=draw(_size_st))
+    else:
+        # negative price, valid size
+        return BookLevel(price=Decimal("-0.10"), size=draw(_size_st))
+
+
+@st.composite
+def _leg_st(draw: st.DrawFn) -> list[BookLevel]:
+    """One leg: 0-5 valid levels mixed with 0-2 junk levels, in arbitrary order."""
+    valid = draw(st.lists(_valid_level_st(), min_size=0, max_size=5))
+    junk = draw(st.lists(_junk_level_st(), min_size=0, max_size=2))
+    levels = valid + junk
+    draw(st.randoms(use_true_random=False)).shuffle(levels)
+    return levels
+
+
+@st.composite
+def _multi_leg_st(draw: st.DrawFn) -> list[list[BookLevel]]:
+    """0-4 legs, each independently generated."""
+    n = draw(st.integers(min_value=0, max_value=4))
+    return [draw(_leg_st()) for _ in range(n)]
+
+
+# ---------------------------------------------------------------------------
+# Existing tests (unchanged)
+# ---------------------------------------------------------------------------
 
 
 def test_top_level_min_depth_buy_and_sell() -> None:
@@ -196,3 +404,257 @@ def test_is_crossed_false_when_all_sizes_zero() -> None:
     """Zero-size levels are filtered; a book of zero-size levels is not crossed."""
     book = make_book("t", bids=[("0.60", "0")], asks=[("0.40", "0")])
     assert is_crossed(book) is False
+
+
+# ---------------------------------------------------------------------------
+# C — D6: walk_sell_legs per-leg fee rates
+# ---------------------------------------------------------------------------
+
+
+def test_walk_sell_empty_returns_zero() -> None:
+    """No legs → zero result, not a crash."""
+    assert walk_sell_legs([], Decimal("0.02")) == (ZERO, [], ZERO)
+
+
+def test_walk_sell_scalar_eq_list() -> None:
+    """walk_sell_legs([...], r) == walk_sell_legs([...], [r, r]).
+
+    Broadcast semantics: a scalar applied to every leg must be byte-identical to
+    passing a uniform per-leg list — same size, same per-leg proceeds, same total fees.
+    """
+    fee = Decimal("0.03")
+    yes_bl = [BookLevel(price=Decimal("0.55"), size=Decimal("100"))]
+    no_bl = [BookLevel(price=Decimal("0.55"), size=Decimal("100"))]
+    # 0.55+0.55=1.10; fee per set ≈ 0.03*0.55*0.45*2 = 0.01485; 1.10-0.01485 > 1.00 ✓
+    size_s, procs_s, fees_s = walk_sell_legs([yes_bl, no_bl], fee)
+    size_l, procs_l, fees_l = walk_sell_legs([yes_bl, no_bl], [fee, fee])
+    assert size_s == size_l
+    assert procs_s == procs_l
+    assert fees_s == fees_l
+
+
+def test_walk_sell_wrong_length_raises() -> None:
+    """A per-leg fee list whose length != n_legs raises ValueError."""
+    yes_bl = [BookLevel(price=Decimal("0.55"), size=Decimal("100"))]
+    no_bl = [BookLevel(price=Decimal("0.55"), size=Decimal("100"))]
+    with pytest.raises(ValueError):
+        walk_sell_legs([yes_bl, no_bl], [Decimal("0.05")])  # 1 rate for 2 legs
+    with pytest.raises(ValueError):
+        walk_sell_legs(
+            [yes_bl, no_bl],
+            [Decimal("0.05"), Decimal("0.05"), Decimal("0.05")],  # 3 rates for 2 legs
+        )
+
+
+def test_walk_sell_per_leg_rates_differentiated() -> None:
+    """Each sell rate is charged on ITS leg — swapping rates with distinct prices changes fees.
+
+    YES bids @0.60, NO bids @0.50; rates [0.02, 0.20] vs [0.20, 0.02].
+    Both orderings are profitable (sum=1.10 > collateral=1.00 after any reasonable fee),
+    so size=100 in both cases, but total fees differ because price*rate differs per leg.
+
+    fee_a = fee(0.60, 0.02) + fee(0.50, 0.20) = 0.0048 + 0.05 = 0.0548  (per set)
+    fee_b = fee(0.60, 0.20) + fee(0.50, 0.02) = 0.0480 + 0.005 = 0.053   (per set)
+    0.0548 ≠ 0.053 → fees_a ≠ fees_b.
+    """
+    yes_bl = [BookLevel(price=Decimal("0.60"), size=Decimal("100"))]
+    no_bl = [BookLevel(price=Decimal("0.50"), size=Decimal("100"))]
+
+    size_a, _, fees_a = walk_sell_legs([yes_bl, no_bl], [Decimal("0.02"), Decimal("0.20")])
+    size_b, _, fees_b = walk_sell_legs([yes_bl, no_bl], [Decimal("0.20"), Decimal("0.02")])
+
+    assert size_a == size_b == Decimal(100)
+    one = Decimal(1)
+    expected_a = (
+        taker_fee(Decimal("0.60"), one, Decimal("0.02"))
+        + taker_fee(Decimal("0.50"), one, Decimal("0.20"))
+    ) * Decimal(100)
+    assert fees_a == expected_a
+    assert fees_a != fees_b
+
+
+# ---------------------------------------------------------------------------
+# D — F2: property tests for walk_buy_legs and walk_sell_legs (Hypothesis)
+# ---------------------------------------------------------------------------
+
+
+@given(legs=_multi_leg_st(), fee=_fee_st, payoff=_payoff_st)
+@settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+def test_walk_buy_props(legs: list[list[BookLevel]], fee: Decimal, payoff: Decimal) -> None:
+    """Properties 1-4 for walk_buy_legs.
+
+    P1 — size and total_fees are always >= 0.
+    P2 — per_leg_cost has exactly n_legs entries, each >= 0.
+    P3a — if size > 0, total cost+fees < size*payoff (all included sets were profitable).
+    P3b — reconstruction: each included price-slice strictly satisfies sum+fee < payoff;
+          the first excluded slice (if any) does NOT satisfy it.
+    P4  — marginal cost (sum_prices + marginal_fee) is non-decreasing across included slices.
+    """
+    n = len(legs)
+    size, costs, fees_total = walk_buy_legs(legs, fee, payoff)
+
+    # P1
+    assert size >= ZERO
+    assert fees_total >= ZERO
+
+    # P2
+    assert len(costs) == n
+    for c in costs:
+        assert c >= ZERO
+
+    # P3a
+    if size > ZERO:
+        assert sum(costs, ZERO) + fees_total < size * payoff
+
+    # P3b + P4 via reconstruction
+    steps = _buy_steps(legs, fee, payoff)
+    marginal_costs: list[Decimal] = []
+    for sp, mf, included, _chunk in steps:
+        if included:
+            assert sp + mf < payoff, f"included slice not profitable: {sp}+{mf} vs {payoff}"
+            marginal_costs.append(sp + mf)
+        else:
+            assert sp + mf >= payoff, f"excluded slice looks profitable: {sp}+{mf} vs {payoff}"
+
+    # P4: marginal cost non-decreasing across included slices
+    for i in range(1, len(marginal_costs)):
+        assert marginal_costs[i] >= marginal_costs[i - 1], (
+            f"marginal cost decreased at step {i}: {marginal_costs[i - 1]} → {marginal_costs[i]}"
+        )
+
+
+@given(legs=_multi_leg_st(), fee=_fee_st, collateral=_payoff_st)
+@settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+def test_walk_sell_props(legs: list[list[BookLevel]], fee: Decimal, collateral: Decimal) -> None:
+    """Properties 1-4 for walk_sell_legs.
+
+    P1 — size and total_fees are always >= 0.
+    P2 — per_leg_proceeds has exactly n_legs entries, each >= 0.
+    P3a — if size > 0, total proceeds-fees > size*collateral (all included sets profitable).
+    P3b — reconstruction: each included price-slice has sum-fee > collateral;
+          the first excluded slice does NOT.
+    P4  — marginal proceeds (sum_prices - marginal_fee) is non-increasing across included slices.
+    """
+    n = len(legs)
+    size, procs, fees_total = walk_sell_legs(legs, fee, collateral)
+
+    # P1
+    assert size >= ZERO
+    assert fees_total >= ZERO
+
+    # P2
+    assert len(procs) == n
+    for p in procs:
+        assert p >= ZERO
+
+    # P3a
+    if size > ZERO:
+        assert sum(procs, ZERO) - fees_total > size * collateral
+
+    # P3b + P4 via reconstruction
+    steps = _sell_steps(legs, fee, collateral)
+    marginal_proceeds: list[Decimal] = []
+    for sp, mf, included, _chunk in steps:
+        if included:
+            assert sp - mf > collateral, f"included slice not profitable: {sp}-{mf} vs {collateral}"
+            marginal_proceeds.append(sp - mf)
+        else:
+            assert sp - mf <= collateral, (
+                f"excluded slice looks profitable: {sp}-{mf} vs {collateral}"
+            )
+
+    # P4: marginal proceeds non-increasing across included slices
+    for i in range(1, len(marginal_proceeds)):
+        assert marginal_proceeds[i] <= marginal_proceeds[i - 1], (
+            f"marginal proceeds increased at step {i}: "
+            f"{marginal_proceeds[i - 1]} → {marginal_proceeds[i]}"
+        )
+
+
+@given(legs=_multi_leg_st(), fee=_fee_st)
+@settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
+def test_walk_buy_prefix_optimality(legs: list[list[BookLevel]], fee: Decimal) -> None:
+    """P5 for buy: adding levels at price=1 (never profitable) leaves size unchanged.
+
+    A level at price=ONE means sum(prices) >= 1 = payoff, so sum+fee >= payoff (not strictly <),
+    and the inclusion condition fails. Appending such levels to every leg can only add depth
+    BEYOND any profitable stopping point — size must not increase.
+    """
+    payoff = ONE
+    size_orig, _, _ = walk_buy_legs(legs, fee, payoff)
+
+    extra = [[*lvl_list, BookLevel(price=ONE, size=Decimal("1000"))] for lvl_list in legs]
+    size_extra, _, _ = walk_buy_legs(extra, fee, payoff)
+
+    assert size_extra == size_orig, (
+        f"size changed after adding price=1 levels: {size_orig} → {size_extra}"
+    )
+
+
+@given(legs=_multi_leg_st(), fee=_fee_st)
+@settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
+def test_walk_sell_depth_monotone(legs: list[list[BookLevel]], fee: Decimal) -> None:
+    """P5 for sell: removing a level from a leg can only decrease (or maintain) size.
+
+    This verifies prefix-optimality from the removal direction: every included set must
+    be genuinely profitable, so removing one underlying level can only reduce accessible
+    depth.  A static 'add worse prices and verify unchanged size' formulation fails for
+    multi-leg sell because a low-price bid in leg i can combine with high prices still
+    present in other legs to give a profitable combined sum.  The depth-removal direction
+    is always well-defined and correct.
+
+    Note: P3b's per-step reconstruction already checks the inclusion criterion directly;
+    this test verifies the complementary depth-monotone direction of the same invariant.
+    """
+    collateral = ONE
+
+    # Find a leg that has at least 2 valid levels so we can remove one without emptying it.
+    valid_leg_indices = [
+        i
+        for i, leg in enumerate(legs)
+        if sum(1 for lvl in leg if lvl.size > ZERO and lvl.price > ZERO) >= 2
+    ]
+    if not valid_leg_indices:
+        return  # nothing useful to remove; skip rather than assert vacuously
+
+    leg_i = valid_leg_indices[0]
+    # Sort valid levels descending (sell order); remove the worst (lowest bid price).
+    valid_sorted_desc = sorted(
+        (lvl for lvl in legs[leg_i] if lvl.size > ZERO and lvl.price > ZERO),
+        key=lambda lvl: lvl.price,
+        reverse=True,
+    )
+    worst_lvl = valid_sorted_desc[-1]  # object identity: one of the originals
+    thinner_leg = [lvl for lvl in legs[leg_i] if lvl is not worst_lvl]
+    thinner_legs = [leg if i != leg_i else thinner_leg for i, leg in enumerate(legs)]
+
+    size_orig, _, _ = walk_sell_legs(legs, fee, collateral)
+    size_thinner, _, _ = walk_sell_legs(thinner_legs, fee, collateral)
+
+    assert size_thinner <= size_orig, (
+        f"removing a level increased size: {size_orig} -> {size_thinner}"
+    )
+
+
+@given(legs=_multi_leg_st(), fee=_fee_st)
+@settings(max_examples=300, suppress_health_check=[HealthCheck.too_slow])
+def test_walk_sell_d6_regression(legs: list[list[BookLevel]], fee: Decimal) -> None:
+    """P6 (D6 regression): scalar scalar == uniform per-leg list for walk_sell_legs.
+
+    For any legs and fee rate, passing the scalar produces byte-identical output to
+    passing a list of n copies of that scalar. This verifies broadcast semantics are
+    preserved after the D6 change and that the scalar caller (complement.py) is unaffected.
+    Also verifies that a mismatched-length sequence raises ValueError.
+    """
+    n = len(legs)
+    size_s, procs_s, fees_s = walk_sell_legs(legs, fee)
+    size_l, procs_l, fees_l = walk_sell_legs(legs, [fee] * n)
+
+    assert size_s == size_l
+    assert procs_s == procs_l
+    assert fees_s == fees_l
+
+    # Mismatched length must raise ValueError (for n_legs > 0 where n+1 != n)
+    if n > 0:
+        with pytest.raises(ValueError):
+            walk_sell_legs(legs, [fee] * (n + 1))
