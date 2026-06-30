@@ -207,6 +207,12 @@ class OrderBookCache:
         """Read-only view of the current stale set (does NOT clear it)."""
         return frozenset(self._stale)
 
+    def evict(self, token_id: str) -> None:
+        """Drop a token from the cache (its market resolved or left the discovery set). Keeps the
+        cache bounded as the tradable universe churns over a long-running session (R6)."""
+        self._state.pop(token_id, None)
+        self._stale.discard(token_id)
+
     def seed(self, book: OrderBook) -> None:
         """Replace a token's state from a full REST ``OrderBook`` — the resync entry point.
 

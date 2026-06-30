@@ -16,7 +16,7 @@ from polyarb.clients.clob import ClobClient
 from polyarb.clients.gamma import GammaClient
 from polyarb.config import Settings
 from polyarb.engine.scanner import Scanner
-from polyarb.models import DetectorKind
+from polyarb.models import DetectorKind, OrderBook
 from polyarb.sinks.notify import NullNotifier
 from polyarb.sinks.store import SqliteStore
 
@@ -171,6 +171,71 @@ def test_scanner_detects_and_persists_complement_under() -> None:
     # persisted to SQLite
     assert store.count() == 1
     assert store.recent(10)[0].net_profit == Decimal("0.10")
+    store.close()
+
+
+# --- streaming scan path (phase 3: trigger off cache + REST-confirm before emit) ---
+
+
+def _streaming_settings() -> Settings:
+    return Settings(
+        streaming_enabled=True,
+        min_profit_bps=Decimal(1),
+        min_notional_usdc=Decimal(1),
+        dedupe_cooldown_seconds=0.0,
+        max_markets_per_scan=10,
+        event_discovery_limit=10,
+    )
+
+
+def _run_streaming_scan(
+    cache_books: list[OrderBook], rest_books: dict[str, dict]
+) -> tuple[list, SqliteStore]:
+    """Seed the cache with ``cache_books``, serve ``rest_books`` over REST; run ONE stream pass."""
+    transport = _transport(rest_books)
+    store = SqliteStore(":memory:")
+
+    async def go() -> list:
+        async with (
+            httpx.AsyncClient(transport=transport) as gamma_http,
+            httpx.AsyncClient(transport=transport) as clob_http,
+        ):
+            scanner = Scanner(
+                _streaming_settings(),
+                gamma=GammaClient(client=gamma_http),
+                clob=ClobClient(client=clob_http),
+                store=store,
+                notifier=NullNotifier(),
+            )
+            assert scanner._cache is not None
+            for ob in cache_books:
+                scanner._cache.seed(ob)
+            return await scanner._scan_streaming_once()
+
+    return asyncio.run(go()), store
+
+
+def test_streaming_scan_confirms_and_persists() -> None:
+    # Cache shows the under edge AND fresh REST books confirm it → emitted (from fresh books).
+    yes = OrderBook.model_validate(_book("Y", ask="0.40", bid="0.30"))
+    no = OrderBook.model_validate(_book("N", ask="0.50", bid="0.40"))
+    rest = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    opps, store = _run_streaming_scan([yes, no], rest)
+    assert len(opps) == 1
+    assert opps[0].detector == DetectorKind.COMPLEMENT
+    assert store.count() == 1
+    store.close()
+
+
+def test_streaming_scan_drops_unconfirmed_candidate() -> None:
+    # The committee guardrail: a phantom cache edge that the fresh REST book no longer shows must
+    # NOT be emitted. Cache says YES 0.40 + NO 0.50 < 1, but REST says YES ask moved to 0.70.
+    yes = OrderBook.model_validate(_book("Y", ask="0.40", bid="0.30"))
+    no = OrderBook.model_validate(_book("N", ask="0.50", bid="0.40"))
+    rest = {"Y": _book("Y", ask="0.70", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    opps, store = _run_streaming_scan([yes, no], rest)
+    assert opps == []
+    assert store.count() == 0
     store.close()
 
 

@@ -25,14 +25,17 @@ from polyarb.clients.clob import ClobClient
 from polyarb.clients.gamma import GammaClient
 from polyarb.clients.gas import GasClient, GasUnavailable
 from polyarb.config import Settings
-from polyarb.detectors.base import Snapshot
+from polyarb.detectors.base import Detector, Snapshot
 from polyarb.detectors.complement import ComplementDetector
 from polyarb.detectors.dependency import DependencyDetector
 from polyarb.detectors.negrisk_basket import NegRiskBasketDetector, NegRiskDualDetector
 from polyarb.detectors.partial_basket import PartialBasketDetector
 from polyarb.engine import metrics
+from polyarb.engine.bookcache import OrderBookCache
+from polyarb.engine.confirm import ConfirmContext, confirm_candidate
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
+from polyarb.engine.streaming import StreamingBooks
 from polyarb.models import DetectorKind, Event, Market, Opportunity, OrderBook
 from polyarb.resolution.relations import (
     POLITICS_NESTING,
@@ -174,7 +177,21 @@ class Scanner:
         self._negrisk_dual = NegRiskDualDetector()
         self._partial = PartialBasketDetector()  # §5 — only run when explicitly enabled
         self._dependency = DependencyDetector()
+        # Detector registry keyed by kind — used by the streaming REST-confirm gate (R1).
+        self._detectors_by_kind: dict[DetectorKind, Detector] = {
+            DetectorKind.COMPLEMENT: self._complement,
+            DetectorKind.NEGRISK_BASKET: self._negrisk,
+            DetectorKind.NEGRISK_DUAL: self._negrisk_dual,
+            DetectorKind.PARTIAL_BASKET: self._partial,
+            DetectorKind.DEPENDENCY: self._dependency,
+        }
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
+        # Websocket streaming (phase 3, opt-in via streaming_enabled). The cache is kept fresh by
+        # a StreamingBooks runner started in run(); scan passes then read books from the cache and
+        # REST-confirm each candidate before emit (committee verdict — streaming is a trigger).
+        self._streaming_enabled = settings.streaming_enabled
+        self._cache: OrderBookCache | None = OrderBookCache() if self._streaming_enabled else None
+        self._streaming: StreamingBooks | None = None
         # Cumulative metrics across passes (Prometheus /metrics could expose these later).
         self._totals: Counter[str] = Counter()
 
@@ -359,6 +376,50 @@ class Scanner:
         opps = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
         return await self._emit(opps, by_condition, stale_dropped=stale_dropped)
 
+    async def _scan_streaming_once(self) -> list[Opportunity]:
+        """One streaming scan pass: discover → read books from the live WS cache → detect
+        CANDIDATES → REST-confirm each (R1) → filter/rank → emit the confirmed (fresh) opps.
+
+        Streaming is a low-latency *trigger*: a candidate detected against the in-memory cache is
+        re-validated against fresh REST books (``confirm_candidate``) before it is emitted, so a
+        phantom edge from a dropped delta can never be reported. Only candidates pay a REST
+        round-trip; discovery + detection run off the cache, preserving the CPU/IO win.
+        """
+        assert self._cache is not None
+        events, markets, by_condition = await self._discover()
+        now = datetime.now(UTC)
+        needed = self._needed_tokens(events, markets)
+        # Keep the runner subscribed/resynced to the current discovery set (R6, partial).
+        if self._streaming is not None:
+            self._streaming.set_tokens(needed)
+        # Read the live cache, scoped to the tokens this pass cares about.
+        books = {t: b for t, b in self._cache.books().items() if t in needed}
+        gas_fixed, gas_per_leg = await self._resolve_gas()
+        candidates = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
+
+        ctx = ConfirmContext(
+            markets_by_condition=by_condition,
+            events_by_id={e.id: e for e in events},
+            relations=self._relations,
+            gas_fixed=gas_fixed,
+            gas_per_leg=gas_per_leg,
+            days_to_resolution=_days_to_resolution(list(by_condition.values()), now),
+        )
+        confirmed: list[Opportunity] = []
+        for candidate in candidates:
+            fresh = await confirm_candidate(
+                candidate, ctx=ctx, clob=self._clob, detectors=self._detectors_by_kind
+            )
+            if fresh is not None:
+                confirmed.append(fresh)
+        log.info(
+            "scan_streamed",
+            cached_books=len(books),
+            candidates=len(candidates),
+            confirmed=len(confirmed),
+        )
+        return await self._emit(confirmed, by_condition, stale_dropped=0)
+
     async def run(self, *, passes: int = 0, max_seconds: float | None = None) -> None:
         """Loop ``scan_once`` on the configured interval until done or signalled.
 
@@ -371,13 +432,30 @@ class Scanner:
             with contextlib.suppress(NotImplementedError):  # not all platforms support this
                 loop.add_signal_handler(sig, stop.set)
 
+        # Start the streaming runner (phase 3) when enabled: it keeps self._cache fresh from the
+        # market WS, sharing this scanner's ClobClient/limiter for resync (R7). Scan passes then
+        # read books from the cache and REST-confirm each candidate before emit.
+        streaming_task: asyncio.Task[None] | None = None
+        if self._streaming_enabled and self._cache is not None:
+            init_events, init_markets, _ = await self._discover()
+            init_tokens = sorted(self._needed_tokens(init_events, init_markets))
+            self._streaming = StreamingBooks(
+                token_ids=init_tokens,
+                clob=self._clob,
+                settings=self._settings,
+                cache=self._cache,
+            )
+            streaming_task = asyncio.create_task(self._streaming.run(stop))
+            log.info("streaming_started", tokens=len(init_tokens))
+        scan_pass = self._scan_streaming_once if self._streaming is not None else self.scan_once
+
         start = loop.time()
-        attempts = 0  # scan_once invocations (success or failure); `passes` arg bounds this
+        attempts = 0  # scan-pass invocations (success or failure); `passes` arg bounds this
         try:
             while not stop.is_set():
                 attempts += 1
                 try:
-                    await self.scan_once()
+                    await scan_pass()
                 except Exception as exc:  # a bad pass must not kill the loop
                     self._totals["errors"] += 1
                     metrics.SCAN_ERRORS.inc()
@@ -398,6 +476,12 @@ class Scanner:
                         stop.wait(), timeout=self._settings.scan_interval_seconds
                     )
         finally:
+            # Stop the streaming runner (it watches `stop`, but passes/max_seconds exits leave it
+            # unset) and await its clean shutdown before releasing shared clients.
+            stop.set()
+            if streaming_task is not None:
+                with contextlib.suppress(Exception):
+                    await streaming_task
             # Release the notifier's owned HTTP client (a WebhookNotifier creates one) on every
             # exit path — signal, passes/max_seconds, or error — so we don't leak the pool.
             with contextlib.suppress(Exception):

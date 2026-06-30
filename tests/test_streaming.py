@@ -516,3 +516,20 @@ def test_resync_unexpected_error_not_fatal() -> None:
 
     calls = asyncio.run(go())
     assert calls  # resync was attempted
+
+
+def test_set_tokens_evicts_dropped_tokens() -> None:
+    """R6 (partial): updating the token set evicts books for tokens that left discovery."""
+    cache = OrderBookCache()
+    cache.seed(_book("old"))
+    cache.seed(_book("keep"))
+    sb = StreamingBooks(
+        ["old", "keep"],
+        clob=FakeClob({}),  # type: ignore[arg-type]
+        settings=_settings(),
+        cache=cache,
+    )
+    sb.set_tokens(["keep", "new"])
+    assert "old" not in cache.books()  # dropped from discovery → evicted
+    assert "keep" in cache.books()  # still tracked → retained
+    sb.set_tokens(["new", "keep"])  # same set, different order → idempotent, no error

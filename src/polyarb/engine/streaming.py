@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import Any
 
 import httpx
@@ -127,6 +127,22 @@ class StreamingBooks:
     def books(self) -> dict[str, OrderBook]:
         """Return a snapshot of all currently-cached order books."""
         return self._cache.books()
+
+    def set_tokens(self, token_ids: Iterable[str]) -> None:
+        """Update the tracked token set (R6, partial).
+
+        The new set is used by the periodic REST resync *immediately* (so newly-discovered markets
+        get books within one resync interval) and by the WS subscription on the next (re)connect;
+        tokens that dropped out of discovery are evicted from the cache to keep it bounded. Dynamic
+        WS subscribe/unsubscribe *without* a reconnect is a follow-up (R6 remaining).
+        """
+        new = sorted(set(token_ids))
+        if new == self._token_ids:
+            return
+        dropped = set(self._token_ids) - set(new)
+        self._token_ids = new
+        for token_id in dropped:
+            self._cache.evict(token_id)
 
     async def run(self, stop: asyncio.Event | None = None) -> None:
         """Drive the runner until ``stop`` is set or the task is cancelled.
