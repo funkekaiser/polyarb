@@ -32,6 +32,10 @@ services:
       # value like "polyarb.db" is right for local runs but in-container resolves under the
       # root-owned WORKDIR /app — unwritable for the non-root user, and bypasses persistence).
       SQLITE_PATH: /data/polyarb.db
+      # Cover the whole live board, not an 80-market slice. Gamma returns ~100 events / ~466
+      # tradable markets per page; 600 captures them all and still uses <half the CLOB
+      # 1,500-reads/10s budget. (Thresholds stay at the sensible 30bps / $50 defaults.)
+      MAX_MARKETS_PER_SCAN: "600"
       # Serve /metrics inside the container so the healthcheck has a liveness signal. Not
       # published to the host below — add a `ports:` mapping to scrape it from outside.
       METRICS_ENABLED: "true"
