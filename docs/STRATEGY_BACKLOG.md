@@ -49,6 +49,8 @@ home per item — no duplicate prose). Awaiting only a judgment call:
 
 ## Decided / closed (no action)
 
+- **M3-feefloor** — **CLOSED 2026-06-30 (live-verified):** the `feeSchedule` is `{exponent,rate,takerOnly,rebateRate}` with **no per-order floor/minimum** across all fee types, so the parabolic taker fee is correct (not a gap). Trip-wire test pins it; API_NOTES records the finding.
+- **C1-atom-use** — **DECIDED 2026-07-01 (committee 2-1 + desk):** filter + rank on the conservative `decision_size`; optimistic ceiling stays surfaced. Shipped (see Shipped table).
 - **C2** — probabilistic / risk-adjusted ranking: **deferred** (needs a void/dispute probability we can't measure; staying with guaranteed strategies).
 - **§5** — opt-in partial basket: **shipped, off by default** (directional; never on the default scan path).
 - **C5** — folded into **C3** (rank by absolute net $).
@@ -81,10 +83,8 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
 | A2-void | B,D | HIGH | Pre-resolution void/50-50 for **live** legs — no reliable predictive signal in available data (`customLiveness` is window length, not void prob). | Curated void-prone source/category denylist (needs a live-API survey) or a payoff-haircut for held arbs; else accept as a documented residual gated by C1. |
-| A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors). Remaining: a book whose `hash` *reverted* across passes (a stale snapshot that still has a plausible mid) isn't caught by the stateless predicate. | Add an `OrderBook.hash` field + a per-token last-hash map in `Scanner`; flag a token whose hash reverts to an earlier value. Needs cross-pass state. |
+| A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors); **hash-revert SHIPPED for the streaming cache** (`OrderBook.hash` + per-token deque in `bookcache.py`). Residual: the **REST scan path** has no cross-pass hash tracking, so a reverted REST snapshot there is still uncaught. | Carry a per-token last-hash map into the REST `Scanner` loop (small) — or rely on streaming (phase 3) where it's already covered. |
 | A1-stale | B | MED | A *stale-closed* leg (Gamma says closed but still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices`. | Fetch a closed leg's book when its resolution is borderline; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. |
-| A1-riskwt | ✶ | MED | A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print. `#live/#total` and "Σ_live « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; down-weight near-fully-resolved baskets (pairs with C1/C3). |
-| M3-feefloor | B,D | MED | Parabolic taker fee `C·r·p·(1−p)` → 0 at p→0/1 where longshot legs live; if the live schedule has a floor/minimum, edge is overstated. | Verify a live per-order fee floor against `API_NOTES`; if it exists, add it per leg. |
 
 ## Open — Tier C: ranking / risk layer (revised 2026-06-30)
 
