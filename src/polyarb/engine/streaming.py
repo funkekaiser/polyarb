@@ -213,6 +213,9 @@ class StreamingBooks:
         Individual fetch errors (``httpx.HTTPError``) are logged and skipped;
         they never abort the loop.
         """
+        # Intentionally 0.0 so the first wake does a full REST resync immediately: it guarantees
+        # a complete book set at startup (belt-and-suspenders with the WS initial_dump) and is no
+        # heavier than the non-streaming REST scan path. Thereafter it fires every interval.
         last_full_resync = 0.0
         loop = asyncio.get_running_loop()
 
