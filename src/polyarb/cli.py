@@ -135,5 +135,47 @@ def replay(
         )
 
 
+@app.command()
+def healthcheck() -> None:
+    """Exit 0 if the scan loop has pulsed recently; exit 1 if stale/missing (Docker HEALTHCHECK).
+
+    Reads HEARTBEAT_PATH from Settings and checks that the recorded timestamp is within
+    ``max(2 * SCAN_INTERVAL_SECONDS, 120)`` seconds.  Missing / unreadable / stale file
+    → non-zero exit with a diagnostic on stderr.  Side-effect-free (read-only).
+    """
+    from datetime import UTC, datetime
+
+    from polyarb.config import load_settings
+
+    settings = load_settings()
+    path = settings.heartbeat_path
+    if path is None:
+        typer.echo("HEARTBEAT_PATH is not configured — set it in the environment or .env", err=True)
+        raise typer.Exit(code=1)
+
+    freshness_window = max(2.0 * settings.scan_interval_seconds, 120.0)
+
+    try:
+        raw = path.read_text().strip()
+        recorded_ts = float(raw)
+    except FileNotFoundError:
+        typer.echo(f"heartbeat file not found: {path}", err=True)
+        raise typer.Exit(code=1) from None
+    except Exception as exc:
+        typer.echo(f"heartbeat file unreadable ({path}): {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    now_ts = datetime.now(UTC).timestamp()
+    age = now_ts - recorded_ts
+    if age > freshness_window:
+        typer.echo(
+            f"heartbeat stale: {age:.1f}s since last pass (window={freshness_window:.0f}s)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"ok: heartbeat {age:.1f}s old (window={freshness_window:.0f}s)")
+
+
 if __name__ == "__main__":
     app()

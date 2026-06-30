@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
+import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import structlog
@@ -46,6 +49,36 @@ from polyarb.sinks.notify import Notifier, NullNotifier
 from polyarb.sinks.store import OpportunityStore
 
 log = structlog.get_logger("polyarb.scanner")
+
+
+# ---------------------------------------------------------------------------
+# D7-heartbeat helpers (module-level so tests can monkeypatch _now)
+# ---------------------------------------------------------------------------
+
+
+def _now() -> float:
+    """Current wall-clock epoch seconds. Module-level so tests can monkeypatch it."""
+    return datetime.now(UTC).timestamp()
+
+
+def _write_heartbeat(path: Path | None) -> None:
+    """Atomically write the current epoch seconds to *path* (write-then-rename).
+
+    No-op when *path* is None (default / non-Docker path). I/O errors are swallowed
+    with contextlib.suppress so a disk-full or permissions problem can never kill the
+    scan loop — consistent with other best-effort I/O in ``Scanner.run``.
+    """
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        tmp_dir = path.parent
+        ts = repr(_now())
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=tmp_dir, delete=False, suffix=".hb.tmp"
+        ) as f:
+            f.write(ts)
+            tmp_name = f.name
+        os.replace(tmp_name, path)
 
 
 def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
@@ -331,6 +364,12 @@ class Scanner:
                     self._totals["errors"] += 1
                     metrics.SCAN_ERRORS.inc()
                     log.error("scan_pass_failed", error=repr(exc))
+                # D7-heartbeat: pulse after every attempt (success OR error).  A wedged
+                # loop stops pulsing; a crashing-then-sleeping loop keeps pulsing (alive).
+                # Both the Prometheus gauge and the heartbeat file are updated here.
+                _ts = _now()
+                metrics.LAST_PASS.set(_ts)
+                _write_heartbeat(self._settings.heartbeat_path)
                 if passes and attempts >= passes:
                     break
                 if max_seconds is not None and (loop.time() - start) >= max_seconds:

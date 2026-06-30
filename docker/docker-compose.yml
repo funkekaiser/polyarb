@@ -36,10 +36,13 @@ services:
       # tradable markets per page; 600 captures them all and still uses <half the CLOB
       # 1,500-reads/10s budget. (Thresholds stay at the sensible 30bps / $50 defaults.)
       MAX_MARKETS_PER_SCAN: "600"
-      # Serve /metrics inside the container so the healthcheck has a liveness signal. Not
+      # Serve /metrics inside the container so the Prometheus gauge is scrapable. Not
       # published to the host below — add a `ports:` mapping to scrape it from outside.
       METRICS_ENABLED: "true"
       METRICS_PORT: "9090"
+      # D7-heartbeat: Scanner.run() writes a timestamp here after each pass; the healthcheck
+      # reads it. /data is the named volume (writable even with read_only: true on the rootfs).
+      HEARTBEAT_PATH: /data/polyarb-heartbeat
     restart: unless-stopped
     # Let the scanner's graceful-shutdown handler drain the current pass on stop.
     stop_grace_period: 30s
@@ -65,21 +68,17 @@ services:
           pids: 256
         reservations:
           memory: 128M
-    # --- liveness: scrape the in-container /metrics endpoint ---
-    # Proves the process is alive and serving. NOTE: /metrics runs on a daemon thread, so this
-    # detects a dead/crash-looping process, not a wedged scan loop — honest about its scope.
+    # --- liveness: assert that the scan loop has pulsed recently (D7-heartbeat) ---
+    # `polyarb healthcheck` reads HEARTBEAT_PATH and exits non-zero if the timestamp is
+    # older than max(2 * SCAN_INTERVAL_SECONDS, 120s), catching a wedged loop (not just a
+    # dead process).  The /metrics daemon thread is no longer the primary signal; it remains
+    # available for Prometheus scraping via METRICS_ENABLED above.
     healthcheck:
-      test:
-        [
-          "CMD",
-          "/app/.venv/bin/python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/metrics', timeout=3)",
-        ]
+      test: ["CMD", "/app/.venv/bin/polyarb", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 60s
     # Default command inherited from the image: scan --dry-run
     # Override per the one-shot examples above when needed.
     logging:

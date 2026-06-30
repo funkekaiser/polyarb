@@ -7,7 +7,7 @@ Prometheus stack (SPEC marks this optional).
 
 from __future__ import annotations
 
-from prometheus_client import Counter, start_http_server
+from prometheus_client import Counter, Gauge, start_http_server
 
 SCAN_PASSES = Counter("polyarb_scan_passes_total", "Completed scan passes")
 SCAN_ERRORS = Counter("polyarb_scan_errors_total", "Scan passes that raised an exception")
@@ -17,6 +17,15 @@ CANDIDATES = Counter(
     ["detector"],
 )
 EMITTED = Counter("polyarb_emitted_opportunities_total", "Opportunities emitted after filters")
+
+# D7-heartbeat: monotonically-set gauge tracking when the loop last pulsed (Unix epoch
+# seconds). Always defined (cheap, no server needed) so it is visible via /metrics when
+# METRICS_ENABLED=true. Complements the heartbeat file: the file is read by the Docker
+# HEALTHCHECK; this gauge is scraped by Prometheus.
+LAST_PASS = Gauge(
+    "polyarb_last_pass_timestamp_seconds",
+    "Unix time of the last completed scan pass (success or error)",
+)
 
 
 def start_metrics_server(port: int) -> None:

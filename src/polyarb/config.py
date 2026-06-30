@@ -8,6 +8,7 @@ No secrets are defined here; a private key (execution only) is read from env at 
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -68,6 +69,14 @@ class Settings(BaseSettings):
     # --- execution module (GATED — leave disabled) ---
     execution_enabled: bool = False
     max_trade_notional_usdc: Decimal = Decimal(0)
+
+    # --- loop-progress liveness (D7-heartbeat) ---
+    # When set, Scanner.run() atomically writes the epoch-seconds timestamp of the last pass
+    # to this file after every scan_once attempt. The `polyarb healthcheck` subcommand reads
+    # it and exits non-zero if the timestamp is stale (loop is wedged). Leave None (default)
+    # for local / non-Docker runs — the heartbeat write is a no-op and the existing test
+    # suite is completely unaffected.
+    heartbeat_path: Path | None = None
 
 
 def load_settings() -> Settings:

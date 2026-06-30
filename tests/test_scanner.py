@@ -545,6 +545,166 @@ def test_run_closes_gas_client_on_shutdown() -> None:
     assert asyncio.run(go()).closed is True
 
 
+# ---------------------------------------------------------------------------
+# D7-heartbeat — file write and healthcheck logic
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_file_written_after_run_pass(tmp_path) -> None:
+    """Scanner.run(passes=1) with a heartbeat_path writes a parseable recent timestamp."""
+    import time
+
+    hb_file = tmp_path / "polyarb-heartbeat"
+    books = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(books)
+    settings = _settings().model_copy(update={"heartbeat_path": hb_file})
+
+    async def go() -> None:
+        async with httpx.AsyncClient(transport=transport) as c:
+            scanner = Scanner(
+                settings,
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=NullNotifier(),
+            )
+            await scanner.run(passes=1)
+
+    before = time.time()
+    asyncio.run(go())
+    after = time.time()
+
+    assert hb_file.exists(), "heartbeat file must be created after run(passes=1)"
+    raw = hb_file.read_text().strip()
+    ts = float(raw)
+    assert before - 5 <= ts <= after + 5, f"timestamp {ts} outside [{before}, {after}]"
+
+
+def test_heartbeat_file_written_after_error_pass(tmp_path) -> None:
+    """Heartbeat is written even when scan_once raises — a crashing loop is still alive."""
+    import time
+
+    hb_file = tmp_path / "polyarb-heartbeat"
+
+    class _BoomGamma:
+        """Gamma that always raises so scan_once hits the except branch."""
+
+        async def get_events(self, **_: object) -> list:
+            raise RuntimeError("boom")
+
+        async def __aenter__(self) -> _BoomGamma:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            pass
+
+    settings = _settings().model_copy(update={"heartbeat_path": hb_file})
+
+    async def go() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(404, json={}))
+        ) as c:
+            scanner = Scanner(
+                settings,
+                gamma=_BoomGamma(),  # type: ignore[arg-type]
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=NullNotifier(),
+            )
+            await scanner.run(passes=1)
+
+    before = time.time()
+    asyncio.run(go())
+    after = time.time()
+
+    assert hb_file.exists(), "heartbeat must be written even after a failing pass"
+    ts = float(hb_file.read_text().strip())
+    assert before - 5 <= ts <= after + 5
+
+
+def test_heartbeat_disabled_by_default(tmp_path) -> None:
+    """With heartbeat_path=None (default) no file is created — existing tests unaffected."""
+    books = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(books)
+    # Default settings: heartbeat_path is None
+    settings = _settings()
+    assert settings.heartbeat_path is None
+
+    async def go() -> None:
+        async with httpx.AsyncClient(transport=transport) as c:
+            scanner = Scanner(
+                settings,
+                gamma=GammaClient(client=c),
+                clob=ClobClient(client=c),
+                store=SqliteStore(":memory:"),
+                notifier=NullNotifier(),
+            )
+            await scanner.run(passes=1)
+
+    asyncio.run(go())
+    # No heartbeat file should exist anywhere in tmp_path
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_healthcheck_ok_fresh_timestamp(tmp_path) -> None:
+    """healthcheck exits 0 when the heartbeat file is fresh."""
+    import time
+
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    hb_file = tmp_path / "polyarb-heartbeat"
+    hb_file.write_text(repr(time.time()))
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["healthcheck"], env={"HEARTBEAT_PATH": str(hb_file)})
+    assert result.exit_code == 0, f"expected exit 0, got {result.exit_code}: {result.output}"
+    assert "ok" in result.output
+
+
+def test_healthcheck_fail_stale_timestamp(tmp_path) -> None:
+    """healthcheck exits non-zero when the heartbeat is older than the freshness window."""
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    hb_file = tmp_path / "polyarb-heartbeat"
+    # Write a timestamp far in the past (well beyond the 120s floor)
+    hb_file.write_text(repr(0.0))  # Unix epoch — always stale
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["healthcheck"], env={"HEARTBEAT_PATH": str(hb_file)})
+    assert result.exit_code != 0, "expected non-zero exit for a stale heartbeat"
+
+
+def test_healthcheck_fail_missing_file(tmp_path) -> None:
+    """healthcheck exits non-zero when the heartbeat file does not exist."""
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    missing = tmp_path / "no-such-heartbeat"
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["healthcheck"], env={"HEARTBEAT_PATH": str(missing)})
+    assert result.exit_code != 0, "expected non-zero exit when file is missing"
+
+
+def test_healthcheck_fail_no_path_configured(monkeypatch) -> None:
+    """healthcheck exits non-zero when HEARTBEAT_PATH is not set in the environment."""
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    # Remove HEARTBEAT_PATH from the environment so Settings.heartbeat_path is None.
+    monkeypatch.delenv("HEARTBEAT_PATH", raising=False)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["healthcheck"])
+    assert result.exit_code != 0, "expected non-zero exit when path is not configured"
+
+
 def test_scan_once_survives_gas_oracle_failure_end_to_end() -> None:
     # End-to-end: a failing gas oracle must NOT abort scan_once — the complement arb is still
     # detected using the static config gas (gas off ⇒ net 0.10 unchanged).
