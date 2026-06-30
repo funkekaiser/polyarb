@@ -43,6 +43,11 @@ services:
       # D7-heartbeat: Scanner.run() writes a timestamp here after each pass; the healthcheck
       # reads it. /data is the named volume (writable even with read_only: true on the rootfs).
       HEARTBEAT_PATH: /data/polyarb-heartbeat
+      # R8 WS-heartbeat: the streaming runner writes here on each applied WS message OR successful
+      # resync. With streaming the default, the healthcheck requires BOTH this and the scan
+      # heartbeat fresh — so a frozen book cache (WS + resync both wedged) fails liveness even
+      # while the scan loop keeps pulsing off stale books.
+      WS_HEARTBEAT_PATH: /data/polyarb-ws-heartbeat
     restart: unless-stopped
     # Let the scanner's graceful-shutdown handler drain the current pass on stop.
     stop_grace_period: 30s
@@ -68,17 +73,17 @@ services:
           pids: 256
         reservations:
           memory: 128M
-    # --- liveness: assert that the scan loop has pulsed recently (D7-heartbeat) ---
-    # `polyarb healthcheck` reads HEARTBEAT_PATH and exits non-zero if the timestamp is
-    # older than max(2 * SCAN_INTERVAL_SECONDS, 120s), catching a wedged loop (not just a
-    # dead process).  The /metrics daemon thread is no longer the primary signal; it remains
-    # available for Prometheus scraping via METRICS_ENABLED above.
+    # --- liveness: assert the scanner is alive AND the book cache is fresh ---
+    # `polyarb healthcheck` checks the scan heartbeat (D7, wedged-loop catch) and — since
+    # streaming is the default path — the WS heartbeat (R8): it fails if either is stale, so a
+    # frozen cache is caught even while the scan loop keeps pulsing. start_period covers the WS
+    # connect + initial full resync.
     healthcheck:
       test: ["CMD", "/app/.venv/bin/polyarb", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 90s
     # Default command inherited from the image: scan --dry-run
     # Override per the one-shot examples above when needed.
     logging:
