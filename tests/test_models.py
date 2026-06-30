@@ -115,3 +115,90 @@ def test_market_uma_resolution_statuses_parsed() -> None:
     assert uma({"umaResolutionStatuses": "[]"}) == []
     assert uma({}) == []  # absent
     assert uma({"umaResolutionStatuses": None}) == []  # null
+
+
+# ---------------------------------------------------------------------------
+# D2 — yes_index: YES/NO token resolution driven by outcome labels
+# ---------------------------------------------------------------------------
+
+
+def _make_binary(
+    outcomes: list[str],
+    prices: list[str] | None = None,
+    token_ids: list[str] | None = None,
+) -> Market:
+    """Build a binary Market the same way Gamma sends it: list fields as JSON-strings."""
+    if prices is None:
+        prices = ["0.6", "0.4"]
+    if token_ids is None:
+        token_ids = ["tok_yes", "tok_no"]
+    return Market.model_validate(
+        {
+            "id": "1",
+            "conditionId": "0x1",
+            "question": "q",
+            "outcomes": json.dumps(outcomes),
+            "outcomePrices": json.dumps(prices),
+            "clobTokenIds": json.dumps(token_ids),
+        }
+    )
+
+
+def test_yes_index_canonical() -> None:
+    """D2: canonical ['Yes', 'No'] → yes_index==0, token/price at index 0."""
+    m = _make_binary(["Yes", "No"])
+    assert m.yes_index == 0
+    assert m.yes_token_id == m.clob_token_ids[0]
+    assert m.no_token_id == m.clob_token_ids[1]
+
+
+def test_yes_index_reversed_pair() -> None:
+    """D2: reversed ['No', 'Yes'] → yes_index==1, YES token/price are at index 1."""
+    m = _make_binary(["No", "Yes"], prices=["0.4", "0.6"], token_ids=["tok_no", "tok_yes"])
+    assert m.yes_index == 1
+    assert m.yes_token_id == "tok_yes"  # clob_token_ids[1]
+    assert m.no_token_id == "tok_no"  # clob_token_ids[0]
+    # yes_outcome() must track the YES side, not blindly use index 0
+    outcome = m.yes_outcome()
+    assert outcome.token_id == "tok_yes"
+    assert outcome.price == Decimal("0.6")
+
+
+def test_yes_index_case_and_whitespace_variants() -> None:
+    """D2: detection is case-insensitive and strips whitespace."""
+    # Upper-case YES at index 0
+    m_upper = _make_binary(["YES", " no "])
+    assert m_upper.yes_index == 0
+
+    # Lower-case yes at index 1 (reversed)
+    m_lower_rev = _make_binary(["no", "yes"], token_ids=["tok_no", "tok_yes"])
+    assert m_lower_rev.yes_index == 1
+    assert m_lower_rev.yes_token_id == "tok_yes"
+
+    # Mixed case reversed
+    m_mixed = _make_binary([" No ", " Yes "], token_ids=["tok_no", "tok_yes"])
+    assert m_mixed.yes_index == 1
+    assert m_mixed.yes_token_id == "tok_yes"
+
+
+def test_yes_index_empty_outcomes_fallback() -> None:
+    """D2: empty outcomes → yes_index==0 (documented fallback), token access unchanged."""
+    m = Market.model_validate(
+        {
+            "id": "1",
+            "conditionId": "0x1",
+            "question": "q",
+            "outcomes": "[]",
+            "clobTokenIds": '["tok_yes", "tok_no"]',
+        }
+    )
+    assert m.yes_index == 0
+    assert m.yes_token_id == "tok_yes"
+    assert m.no_token_id == "tok_no"
+
+
+def test_yes_index_non_yes_no_pair_fallback() -> None:
+    """D2: non-Yes/No labels like ['Trump', 'Biden'] → yes_index==0 (documented fallback)."""
+    m = _make_binary(["Trump", "Biden"], token_ids=["tok_trump", "tok_biden"])
+    assert m.yes_index == 0
+    assert m.yes_token_id == "tok_trump"  # index 0 — can't do better without labels

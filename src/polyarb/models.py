@@ -5,7 +5,8 @@ docs/API_NOTES.md). Notable real-API quirks these models normalize:
 
 - Gamma encodes ``outcomes``, ``outcomePrices`` and ``clobTokenIds`` as JSON-*strings*,
   not arrays — we parse them. ``clobTokenIds[i]`` lines up with ``outcomes[i]`` (index 0 =
-  "Yes", index 1 = "No" for binary markets).
+  "Yes", index 1 = "No" for canonical binary markets; see :attr:`Market.yes_index` for the
+  reversed-pair fix, D2).
 - The CLOB order book returns ``bids`` ascending and ``asks`` descending (worst→best), with
   prices/sizes as strings. We do NOT trust that ordering: ``best_bid``/``best_ask`` are
   computed by value (max bid, min ask) so the arb math is correct regardless.
@@ -121,12 +122,40 @@ class Market(BaseModel):
         return len(self.clob_token_ids) == 2
 
     @property
+    def yes_index(self) -> int:
+        """Index of the YES side in ``outcomes`` / ``clob_token_ids`` / ``outcome_prices``.
+
+        Canonical fast-path (overwhelmingly common): ``outcomes == ["Yes", "No"]``
+        → returns 0, identical to the former hard-coded assumption.
+
+        Reversed-pair fix (D2): if exactly two outcomes are present and one is "yes"
+        and the other "no" (case-insensitive, stripped), the position of the "yes"
+        label is returned (0 or 1).  This covers markets where Gamma sends
+        ``outcomes = ["No", "Yes"]`` with ``clob_token_ids[0]`` being the NO token —
+        the former blind ``[0]`` index would have silently returned the wrong token,
+        inverting the complement / basket profit identities.
+
+        Documented fallback (everything else): returns 0.  Applies when ``outcomes``
+        is empty/absent (token ids present but no labels) or when the pair is not a
+        clean Yes/No (e.g. ``["Trump", "Biden"]``).  We cannot determine the YES side
+        safely from arbitrary labels, so we preserve the previous behaviour.
+        """
+        if len(self.outcomes) == 2:
+            a = self.outcomes[0].strip().lower()
+            b = self.outcomes[1].strip().lower()
+            if a == "yes" and b == "no":
+                return 0  # canonical — fast-path, same as before
+            if a == "no" and b == "yes":
+                return 1  # reversed pair — D2 fix
+        return 0  # fallback: absent/empty outcomes or non-Yes/No labels
+
+    @property
     def yes_token_id(self) -> str:
-        return self.clob_token_ids[0]
+        return self.clob_token_ids[self.yes_index]
 
     @property
     def no_token_id(self) -> str:
-        return self.clob_token_ids[1]
+        return self.clob_token_ids[1 - self.yes_index]
 
     @property
     def is_fee_free(self) -> bool:
@@ -134,15 +163,22 @@ class Market(BaseModel):
         return not self.fees_enabled or self.fee_type is None or self.fee_rate in (None, Decimal(0))
 
     def yes_outcome(self) -> Outcome:
-        """The YES side as a standalone Outcome (used by the NegRisk basket detector)."""
+        """The YES side as a standalone Outcome (used by the NegRisk basket detector).
+
+        Both the name fallback and the price are indexed via :attr:`yes_index` so that a
+        reversed ``["No", "Yes"]`` market produces the correct label and price for the YES
+        token (D2 fix).
+        """
         if not self.is_binary:
             raise ValueError(f"yes_outcome() requires a binary market; {self.condition_id} is not")
-        name = self.group_item_title or (self.outcomes[0] if self.outcomes else "Yes")
+        idx = self.yes_index
+        name = self.group_item_title or (self.outcomes[idx] if self.outcomes else "Yes")
+        price = self.outcome_prices[idx] if len(self.outcome_prices) > idx else None
         return Outcome(
             name=name,
             token_id=self.yes_token_id,
             condition_id=self.condition_id,
-            price=self.outcome_prices[0] if self.outcome_prices else None,
+            price=price,
         )
 
 
