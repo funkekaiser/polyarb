@@ -32,6 +32,8 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | F2 | **Walks property-tested** | `walk_buy_legs`/`walk_sell_legs` covered by Hypothesis property tests: fee≥0, prefix-optimality, monotone marginal cost/proceeds, no spurious inclusion, D6 scalar≡sequence regression. |
 | D7 | **Loop heartbeat** | `Scanner.run` atomically writes a per-pass timestamp to `heartbeat_path` (default None = off) + a `polyarb_last_pass_timestamp_seconds` gauge; new `polyarb healthcheck` CLI (fresh ≤ `max(2·interval,120s)`) replaces the `/metrics` scrape as the Docker liveness probe — catches a wedged loop, not just a dead process. |
 | — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). Parallel-worktree hardening batch (A3-q/D2/D6/F2/D7). |
+| C1-atom-use | **Filter+rank on conservative size** | committee (2-1) + desk: `MIN_NOTIONAL` gate and the $-rank now act on `Opportunity.decision_size` (conservative best-level depth, `is None`→optimistic fallback); `executable_size`/`total_net_profit` kept as the surfaced optimistic ceiling. Honest floor + winner's-curse-free rank for a small non-atomic taker; applies to the streamed path too (R4). |
+| A1-riskwt | **Live/total surfaced + soft rank tiebreak** | `Opportunity.live_count/total_count`; ranking's lowest-priority key prefers fuller baskets, clamped so it can never reorder real money. |
 
 ---
 
@@ -41,7 +43,7 @@ Each is implemented to a safe/conservative default; full context lives in the ti
 home per item — no duplicate prose). Awaiting only a judgment call:
 
 - **D1** — fingerprint-gate policy for hand-declared relations (hard gate / honor-system / attestation). → *Tier D*
-- **C1-atom-use** — should ranking ($-axis) + the `MIN_NOTIONAL` filter trust the optimistic `executable_size` or the conservative `conservative_size` (or a haircut)? → *Tier A (C1-atomicity-use)*
+- ~~**C1-atom-use**~~ — **DECIDED 2026-07-01 (committee 2-1 + desk): filter+rank on the conservative `decision_size`.** Shipped.
 - **B2′-num** — accept the live gas oracle as source of truth, or measure + pin static gas numbers? → *Tier D*
 - **A2-void** — accept the pre-resolution void residual, or invest in a curated void-prone denylist? → *Tier A (A2-void)*
 
@@ -79,7 +81,6 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
 | A2-void | B,D | HIGH | Pre-resolution void/50-50 for **live** legs — no reliable predictive signal in available data (`customLiveness` is window length, not void prob). | Curated void-prone source/category denylist (needs a live-API survey) or a payoff-haircut for held arbs; else accept as a documented residual gated by C1. |
-| C1-atomicity-use | ✶ | HIGH (decision) | The conservative `conservative_size` is now **surfaced** (shipped), but ranking ($-axis) and the `MIN_NOTIONAL` filter still trust the optimistic `executable_size`. Switching them to the conservative size (or a survival-haircut blend) is a risk-appetite call. | **DESK** — Jonathan picks: keep optimistic / use conservative / haircut factor. Matters most pre-execution for honesty of rank+notional. |
 | A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors). Remaining: a book whose `hash` *reverted* across passes (a stale snapshot that still has a plausible mid) isn't caught by the stateless predicate. | Add an `OrderBook.hash` field + a per-token last-hash map in `Scanner`; flag a token whose hash reverts to an earlier value. Needs cross-pass state. |
 | A1-stale | B | MED | A *stale-closed* leg (Gamma says closed but still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices`. | Fetch a closed leg's book when its resolution is borderline; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. |
 | A1-riskwt | ✶ | MED | A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print. `#live/#total` and "Σ_live « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; down-weight near-fully-resolved baskets (pairs with C1/C3). |
@@ -170,9 +171,10 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
      streamed path (it both keeps a 15-min-dead feed and drops valid quiescent books).
    - **R3 — detect on a fixed cadence over a cache snapshot**, not per-delta; coarsen/replace the
      dedupe cost-bucket for streaming (else bucket-flap re-emits the same opp + ephemeral-edge spam).
-   - **R4 — filter/rank on `conservative_size` (or a haircut) for the streamed path** — a missed
-     deep delta silently inflates the full-walk `executable_size`. Couples to the open
-     **C1-atom-use** desk decision (now streaming-coupled).
+   - **R4 — filter/rank on the conservative `decision_size`** — **SATISFIED**: the C1-atom-use
+     decision (2026-07-01) already routes the `MIN_NOTIONAL` gate and the $-rank through
+     `Opportunity.decision_size` globally, so the streamed path inherits it. A missed deep delta
+     can no longer silently inflate the gated/ranked size.
    - **R5 — stream-stall watchdog.** A connected-but-quiet WS is undetectable today (degrades to a
      60s poll, ~12× staler than the 5s REST path, with no alarm; the D7 heartbeat stays green).
      Track `last_message` monotonic; on a gap force-reconnect + immediate resync + a metric.
@@ -207,7 +209,7 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
 
 **Deferred:** small-edge tier (needs #3+#4+execution), **C2** (probabilistic ranking), **§5**
 (opt-in/off), **E4** (no probabilistic bets yet). **Desk decisions still open:** D1 (handled in #2),
-C1-atom-use, B2′-num / gas-wallet path, A2-void.
+B2′-num / gas-wallet path, A2-void.
 
 ### Dependency-workflow design seed (from subsystem mapping, 2026-06-30)
 
