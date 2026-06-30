@@ -22,6 +22,11 @@ services:
     env_file:
       - path: ../.env
         required: false
+    environment:
+      # Pin the SQLite DB to the named volume, overriding any SQLITE_PATH in .env (a relative
+      # value like "polyarb.db" is right for local runs but in-container resolves under the
+      # root-owned WORKDIR /app — unwritable for the non-root user, and bypasses persistence).
+      SQLITE_PATH: /data/polyarb.db
     restart: unless-stopped
     volumes:
       # Named volume so SQLite history survives container restarts and rebuilds.
