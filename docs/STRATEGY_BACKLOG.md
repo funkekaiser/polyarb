@@ -139,15 +139,65 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
    **register only verified** ones. Activates the dormant dependency detector with no manual
    curation. Resolves **D1** (fingerprint policy) as part of it. Gate + committee before commit.
 3. **Websocket streaming** — in-memory books from deltas: real-time detection + far less CPU/IO
-   than re-fetching ~924 books/pass; the only way to catch instant transients. Three phases:
-   **(1) book cache — SHIPPED** (`engine/bookcache.py`, `OrderBookCache`): verified the live WS
-   schema (`book` snapshot + `price_change` deltas), applies them into `dict[token_id, OrderBook]`,
-   top-of-book integrity check (`best_bid`/`best_ask`) flags drifted tokens via `take_stale()`.
-   **⚠ Known limitation → phase 2:** the integrity check only validates the *top* of book — a
-   missed *deep*-level delta corrupts depth-walk sizing without being flagged, so phase 2 MUST
-   add a **periodic REST resync** (and resync on `take_stale()`) as the full-depth safety net.
-   **(2) streaming runner** — connection + reconnect/backoff + periodic + on-demand resync.
-   **(3) scanner integration** — a streaming book-source behind a default-OFF flag.
+   than re-fetching ~924 books/pass; the only way to catch instant transients.
+   **(1) book cache — SHIPPED** (`engine/bookcache.py`): verified live WS schema, applies
+   `book`/`price_change` into `dict[token_id, OrderBook]`, top-of-book integrity check + A3
+   hash-revert flag drifted tokens via `take_stale()`.
+   **(2) streaming runner — SHIPPED** (`engine/streaming.py`, `StreamingBooks`): reconnect/backoff
+   + periodic full REST resync + on-demand `take_stale()` resync (`seed()`); default OFF.
+   **(3) scanner integration — DESIGN (see committee verdict below); NOT a wiring swap.**
+
+   ### Websocket phase-3 design — committee verdict (2026-07-01)
+   A 3-lens Opus committee (data-integrity · execution-realism · operational) **unanimously**
+   concluded: **do NOT detect-and-emit directly off the streamed cache.** Treat `StreamingBooks`
+   as a low-latency *trigger* / candidate generator, and gate emission behind a **REST-confirm
+   barrier**. Rationale: a single dropped delta fabricates a phantom **instant complement** across
+   the `YES+NO=1` knife-edge (tagged OBJECTIVE → exempt from the risk gate → the one false
+   positive nothing catches); the integrity check validates only top-of-book *price* (not size,
+   not depth), so silent divergence is invisible for up to one resync interval and inflates
+   `executable_size`/notional/rank. Bug-hunt + committee already landed the *now*-fixable cache
+   bugs (null-safety, best=0 sentinel both directions, `seed()` last-write-wins).
+
+   **Phase-3 design requirements (must hold before `streaming_enabled=true` is safe):**
+   - **R1 — REST-confirm before emit.** On a detector firing against streamed books, re-fetch that
+     candidate's *exact legs* via REST (near-simultaneously) and re-run the detector; emit only if
+     it still holds. Mandatory at minimum for `realizes="instant"` complement. Cheap (candidates
+     only); preserves the discovery-side CPU/IO win. Closes the phantom-complement + deep-drift +
+     cross-leg-skew findings in one stroke.
+   - **R2 — per-token wall-clock freshness guard** (time since last applied delta *or* successful
+     resync), distinct from the book's last-change `timestamp_ms`. Streaming staleness window in
+     **seconds**, not `max_book_age_s=900`. Do NOT reuse `_fresh_books`-by-last-change for the
+     streamed path (it both keeps a 15-min-dead feed and drops valid quiescent books).
+   - **R3 — detect on a fixed cadence over a cache snapshot**, not per-delta; coarsen/replace the
+     dedupe cost-bucket for streaming (else bucket-flap re-emits the same opp + ephemeral-edge spam).
+   - **R4 — filter/rank on `conservative_size` (or a haircut) for the streamed path** — a missed
+     deep delta silently inflates the full-walk `executable_size`. Couples to the open
+     **C1-atom-use** desk decision (now streaming-coupled).
+   - **R5 — stream-stall watchdog.** A connected-but-quiet WS is undetectable today (degrades to a
+     60s poll, ~12× staler than the 5s REST path, with no alarm; the D7 heartbeat stays green).
+     Track `last_message` monotonic; on a gap force-reconnect + immediate resync + a metric.
+   - **R6 — resubscription + cache eviction.** The runner subscribes to a fixed `token_ids`; the
+     scanner re-discovers each pass. Diff the set per discovery, dynamic subscribe/unsubscribe
+     (API_NOTES §WS), and evict dropped tokens (else silent misses on new markets + unbounded
+     memory + wasted resync budget on resolved tokens).
+   - **R7 — single shared `ClobClient`/limiter.** Each client builds its own `/book` token bucket
+     (`base.py`); a separate streaming client doubles the real rate → 429s. Share one limiter, and
+     when streaming, the scanner must read from the cache instead of re-fetching the global set.
+   - **R8 — streaming metrics + stream-aware healthcheck:** `ws_last_message_timestamp_seconds`,
+     `ws_reconnects_total`, `ws_resyncs_total`, `ws_resync_errors_total`, cache `token_count`,
+     `skip_count`. The D7 healthcheck must not certify healthy while the WS is dead.
+
+   **Streaming backlog (smaller / later):**
+   - **Recompute-and-compare WS hash** locally on every delta (if the WS `hash` is a deterministic
+     content hash — verify the algorithm vs API_NOTES). Highest-leverage integrity upgrade: turns
+     the up-to-60s blind window into instant divergence detection; would relax R1's necessity.
+   - Explicit WS `aclose()` on shutdown (cleanliness; currently relies on async-gen finalization).
+   - Decide whether the streamed path keys staleness off last-change vs resync/fetch time (R2).
+   - **Phase-5:** streaming gives a *weaker* execution guarantee on silent WS degrade — execution
+     must REST-confirm + send marketable-limit orders that fail closed if the level is gone.
+   - **NON-ISSUES (committee-confirmed, no action):** read-only / net-of-fees invariants intact;
+     hash-history eviction is conservative-by-design; reconnect backoff is sound; the startup full
+     resync fits the `/book` budget.
 4. **False-positive hardening** — *partially shipped* (A3-quiescence extreme-spread predicate, D2
    yes-index, D6, F2, D7-heartbeat — parallel-worktree batch). Remaining: A3 hash-revert,
    D2-residual, A1-stale, per-leg min-order-size (D5), A1-riskwt, M3-feefloor. Quality now, *and*
