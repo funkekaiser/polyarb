@@ -26,7 +26,12 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | B2′-dyn | **Live gas oracle** | `GasClient` (Polygon Gas Station + CoinGecko POL/USD → USDC, TTL-cached, keyless) wired into the scanner behind `use_dynamic_gas` (OFF by default). Any oracle failure (incl. zero/negative values) → `GasUnavailable` → silent fallback to static config; never aborts a pass. Default path constructs no client and makes no network call. |
 | C1-atom | **Conservative size (surface)** | `Opportunity.conservative_size` = min best-level depth across legs (`top_level_min_depth`), the pessimistic companion to the optimistic full-walk `executable_size`. Diagnostic only. *Whether ranking/filtering should use it → desk.* |
 | A2 | **Void — partial** | closed-leg (post-) void handled by `live_partition`; `customLiveness>default→ELEVATED` (weak). **Core pre-resolution void still OPEN** → see A2-void. |
-| — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). |
+| A3-q | **Corrupt-book gate (partial)** | `is_corrupt_book` (`pricing/book_quality.py`) flags the #180 degenerate `bid≤0.01 ∧ ask≥0.99` extreme spread and is gated alongside `is_crossed` in complement + NegRisk YES/dual detectors. Stateless; only ever a false-NEGATIVE (skip), never a fabricated arb. **Hash-revert half still open** (needs cross-pass state + `OrderBook.hash`) → see A3-quiescence. |
+| D2 | **YES-index identity (partial)** | `Market.yes_index` detects a reversed `["No","Yes"]` outcome pair; `yes_token_id`/`no_token_id`/`yes_outcome()` route through it so the buy/sell legs use the right tokens. Canonical `["Yes","No"]`/no-outcomes paths byte-identical. **Residual:** `live_partition` resolved-price check (`negrisk_basket.py:95`) + cosmetic leg labels still read `[0]` → see D2-residual. |
+| D6 | **Per-leg sell fees** | `walk_sell_legs` now accepts `Decimal \| Sequence[Decimal]` via `_per_leg_rates`, symmetric with `walk_buy_legs`; scalar callers (complement) broadcast unchanged. |
+| F2 | **Walks property-tested** | `walk_buy_legs`/`walk_sell_legs` covered by Hypothesis property tests: fee≥0, prefix-optimality, monotone marginal cost/proceeds, no spurious inclusion, D6 scalar≡sequence regression. |
+| D7 | **Loop heartbeat** | `Scanner.run` atomically writes a per-pass timestamp to `heartbeat_path` (default None = off) + a `polyarb_last_pass_timestamp_seconds` gauge; new `polyarb healthcheck` CLI (fresh ≤ `max(2·interval,120s)`) replaces the `/metrics` scrape as the Docker liveness probe — catches a wedged loop, not just a dead process. |
+| — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). Parallel-worktree hardening batch (A3-q/D2/D6/F2/D7). |
 
 ---
 
@@ -75,7 +80,7 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 |---|-----|-----|-------|---------------|
 | A2-void | B,D | HIGH | Pre-resolution void/50-50 for **live** legs — no reliable predictive signal in available data (`customLiveness` is window length, not void prob). | Curated void-prone source/category denylist (needs a live-API survey) or a payoff-haircut for held arbs; else accept as a documented residual gated by C1. |
 | C1-atomicity-use | ✶ | HIGH (decision) | The conservative `conservative_size` is now **surfaced** (shipped), but ranking ($-axis) and the `MIN_NOTIONAL` filter still trust the optimistic `executable_size`. Switching them to the conservative size (or a survival-haircut blend) is a risk-appetite call. | **DESK** — Jonathan picks: keep optimistic / use conservative / haircut factor. Matters most pre-execution for honesty of rank+notional. |
-| A3-quiescence | B,D | MED | The age-net can't distinguish a corrupt stale snapshot (#180) from a quiescent-but-valid book; any threshold trades thin-market coverage for staleness safety. | Targeted #180 detector: flag a book whose `hash` reverted or that shows the 0.01/0.99 corrupt pattern, instead of a blunt age cutoff. |
+| A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors). Remaining: a book whose `hash` *reverted* across passes (a stale snapshot that still has a plausible mid) isn't caught by the stateless predicate. | Add an `OrderBook.hash` field + a per-token last-hash map in `Scanner`; flag a token whose hash reverts to an earlier value. Needs cross-pass state. |
 | A1-stale | B | MED | A *stale-closed* leg (Gamma says closed but still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices`. | Fetch a closed leg's book when its resolution is borderline; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. |
 | A1-riskwt | ✶ | MED | A1 now (correctly) emits baskets from events with eliminations — disproportionately late-life, thin, stale-print. `#live/#total` and "Σ_live « 1" are unmodeled risk signals. | Surface `#live/#total` on the Opportunity; down-weight near-fully-resolved baskets (pairs with C1/C3). |
 | M3-feefloor | B,D | MED | Parabolic taker fee `C·r·p·(1−p)` → 0 at p→0/1 where longshot legs live; if the live schedule has a floor/minimum, edge is overstated. | Verify a live per-order fee floor against `API_NOTES`; if it exists, add it per leg. |
@@ -96,12 +101,9 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
 | D1 | D | MED | Hand-declared relations **bypass the §6 fingerprint gate** (RELATIONS.md fixed; code not). Wrong-direction relation → full-loss "lock". | Enforce fingerprint match in `add_relation`. |
-| D2 | B,C | MED* | Detectors trust `clob_token_ids[0]==YES`; a reversed-outcome market corrupts the identity. (*low confidence.) | Validate `outcomes[0]` / carry an explicit `yes_index`. |
+| D2-residual | B,C | LOW | **Core SHIPPED** (`Market.yes_index`; buy/sell legs use the right tokens). Residual: `live_partition`'s closed-leg resolved-price check (`negrisk_basket.py:95`, `outcome_prices[0]`) and cosmetic leg labels (`outcomes[0]` in negrisk/partial detectors) still assume index 0 → a reversed *and closed* constituent could misfire the elimination gate. | Route those reads through `market.yes_index`; add a reversed-closed-leg regression test. Small, but touches detector files. |
 | B2′-num | ✶ | MED (decision) | Gas mechanism shipped with a conservative static ceiling (0.02/0.05 USDC) **and** an opt-in live oracle (B2′-dyn). Real measured Polygon/USDC numbers (merge/redeem + taker fills) would let us tighten the static knobs or trust the oracle. | **DESK** — Jonathan/ops: accept the live oracle, or measure once and pin `gas_estimate`/`gas_per_leg_estimate`. |
-| D7-heartbeat | ✶ | LOW | The Docker healthcheck scrapes `/metrics` (a daemon thread) → it catches a dead/crash-looping process but **not a wedged scan loop**. No loop-progress liveness signal. | Emit a per-pass heartbeat (e.g. write last-pass mono/wall time to a small file in `/data` or a metrics gauge) and have the healthcheck assert it advanced within ~N intervals. |
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded exposure; per-leg `min_order_size`/tick not enforced; no deterministic final tiebreak. | Address alongside C-layer / sizing. |
-| D6 | C | LOW | `walk_sell_legs` takes a scalar fee only (asymmetric with `walk_buy_legs`). | Accept `Decimal | Sequence[Decimal]` + reuse `_per_leg_rates`. |
-| F2 | ✶ | LOW | The walks aren't property-tested directly (pure `*_profit` fns are off the runtime path). | Property-test `walk_buy_legs`/`walk_sell_legs` (monotone marginal, prefix-optimality, fee ≥ 0). |
 | C-defer | C | LOW | Complement deferrals: greedy-walk vs threshold coupling; worst-fill `Leg.price` (Phase-5 executor); NegRisk merge routing + higher gas (Phase-5); 1e-28 VWAP rounding / min-size. | Mostly Phase-5 / negligible; revisit then. |
 
 ## Open — Tier E: realized-outcome tracking & evaluation (added 2026-06-30)
@@ -137,9 +139,10 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
 3. **Websocket streaming** — wire `ws.py` into the scan loop (in-memory books from deltas):
    real-time detection + far less CPU/IO than re-fetching ~924 books/pass. The only way to catch
    instant transients. After #2.
-4. **False-positive hardening** — A3-quiescence (#180 corrupt 0.01/0.99 pattern), A1-stale, per-leg
-   min-order-size (D5), A1-riskwt, M3-feefloor. Quality now, *and* the prerequisite for revisiting
-   the small-edge tier.
+4. **False-positive hardening** — *partially shipped* (A3-quiescence extreme-spread predicate, D2
+   yes-index, D6, F2, D7-heartbeat — parallel-worktree batch). Remaining: A3 hash-revert,
+   D2-residual, A1-stale, per-leg min-order-size (D5), A1-riskwt, M3-feefloor. Quality now, *and*
+   the prerequisite for revisiting the small-edge tier.
 5. **Realized-outcome ledger (E1) → guaranteed-slip alarm (E2)** — the evaluation layer (did
    "guaranteed" really pay?). Its own workstream.
 
