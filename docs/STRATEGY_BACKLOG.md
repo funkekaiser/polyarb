@@ -138,9 +138,16 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
    **verify** each (resolution-fingerprint + adversarial committee hunting an A∧¬B scenario), then
    **register only verified** ones. Activates the dormant dependency detector with no manual
    curation. Resolves **D1** (fingerprint policy) as part of it. Gate + committee before commit.
-3. **Websocket streaming** — wire `ws.py` into the scan loop (in-memory books from deltas):
-   real-time detection + far less CPU/IO than re-fetching ~924 books/pass. The only way to catch
-   instant transients. After #2.
+3. **Websocket streaming** — in-memory books from deltas: real-time detection + far less CPU/IO
+   than re-fetching ~924 books/pass; the only way to catch instant transients. Three phases:
+   **(1) book cache — SHIPPED** (`engine/bookcache.py`, `OrderBookCache`): verified the live WS
+   schema (`book` snapshot + `price_change` deltas), applies them into `dict[token_id, OrderBook]`,
+   top-of-book integrity check (`best_bid`/`best_ask`) flags drifted tokens via `take_stale()`.
+   **⚠ Known limitation → phase 2:** the integrity check only validates the *top* of book — a
+   missed *deep*-level delta corrupts depth-walk sizing without being flagged, so phase 2 MUST
+   add a **periodic REST resync** (and resync on `take_stale()`) as the full-depth safety net.
+   **(2) streaming runner** — connection + reconnect/backoff + periodic + on-demand resync.
+   **(3) scanner integration** — a streaming book-source behind a default-OFF flag.
 4. **False-positive hardening** — *partially shipped* (A3-quiescence extreme-spread predicate, D2
    yes-index, D6, F2, D7-heartbeat — parallel-worktree batch). Remaining: A3 hash-revert,
    D2-residual, A1-stale, per-leg min-order-size (D5), A1-riskwt, M3-feefloor. Quality now, *and*
