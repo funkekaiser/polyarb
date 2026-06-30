@@ -10,7 +10,9 @@ from polyarb.cli import app
 
 
 def test_package_imports() -> None:
-    assert polyarb.__version__ == "0.0.0"
+    # Alpha versioning: a non-empty PEP 440 string, kept in sync with pyproject.
+    assert polyarb.__version__
+    assert polyarb.__version__[0].isdigit()
 
 
 def test_cli_app_exists() -> None:

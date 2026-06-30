@@ -23,10 +23,10 @@ def main() -> None:
 
 @app.command()
 def version() -> None:
-    """Print the installed polyarb version."""
+    """Print the installed polyarb version (alpha)."""
     from polyarb import __version__
 
-    typer.echo(__version__)
+    typer.echo(f"polyarb {__version__} (alpha)")
 
 
 @app.command()
