@@ -44,7 +44,10 @@ def _live_fraction_key(opp: Opportunity) -> Decimal:
     it only breaks ties after risk-tier and absolute-$ already agree.
     """
     if opp.live_count is not None and opp.total_count is not None and opp.total_count > 0:
-        return -Decimal(opp.live_count) / Decimal(opp.total_count)
+        # Clamp to the neutral floor: an invalid live_count > total_count (only reachable via
+        # direct construction; detectors can't produce it) must not score BETTER than a fully
+        # live basket. Valid fractions are in [0, 1] → key in [-1, 0]; the floor caps it at -1.
+        return max(-Decimal(opp.live_count) / Decimal(opp.total_count), _LIVE_FRACTION_NEUTRAL)
     return _LIVE_FRACTION_NEUTRAL  # neutral: treated as fully live
 
 

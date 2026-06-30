@@ -96,6 +96,21 @@ def test_near_fully_resolved_basket_ranks_below_fuller_one() -> None:
     assert ranked[1] is near_resolved
 
 
+def test_invalid_live_count_clamped_to_neutral() -> None:
+    """Bug-hunt regression: an invalid live_count > total_count must NOT score better than a
+    genuinely fully-live basket. The live-fraction key is clamped to the neutral floor, so the
+    two tie and stable order keeps the fully-live opp first. Without the clamp the invalid opp's
+    key (-5/3 < -1) would wrongly sort it ahead."""
+    fully_live = _opp(
+        net="0.10", size="100", risk=ResolutionRisk.OBJECTIVE, live_count=3, total_count=3
+    )
+    invalid = _opp(
+        net="0.10", size="100", risk=ResolutionRisk.OBJECTIVE, live_count=5, total_count=3
+    )
+    ranked = rank([fully_live, invalid])
+    assert ranked[0] is fully_live
+
+
 def test_riskwt_never_reorders_bigger_dollar_opp() -> None:
     """A1-riskwt: a near-fully-resolved basket must NEVER rank above a bigger-$ opp
     in the same risk tier. The absolute-$ axis dominates the live-fraction tiebreak."""
