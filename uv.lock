@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "polyarb"
-version = "0.0.0"
+version = "0.5.0a2"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

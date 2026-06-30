@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import signal
-import tempfile
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -24,13 +23,14 @@ import structlog
 from polyarb.clients.clob import ClobClient
 from polyarb.clients.gamma import GammaClient
 from polyarb.clients.gas import GasClient, GasUnavailable
+from polyarb.clients.ws import MarketWebSocket
 from polyarb.config import Settings
 from polyarb.detectors.base import Detector, Snapshot
 from polyarb.detectors.complement import ComplementDetector
 from polyarb.detectors.dependency import DependencyDetector
 from polyarb.detectors.negrisk_basket import NegRiskBasketDetector, NegRiskDualDetector
 from polyarb.detectors.partial_basket import PartialBasketDetector
-from polyarb.engine import metrics
+from polyarb.engine import heartbeat, metrics
 from polyarb.engine.bookcache import OrderBookCache
 from polyarb.engine.confirm import ConfirmContext, confirm_candidate
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
@@ -61,27 +61,16 @@ log = structlog.get_logger("polyarb.scanner")
 
 def _now() -> float:
     """Current wall-clock epoch seconds. Module-level so tests can monkeypatch it."""
-    return datetime.now(UTC).timestamp()
+    return heartbeat.now_epoch()
 
 
 def _write_heartbeat(path: Path | None) -> None:
     """Atomically write the current epoch seconds to *path* (write-then-rename).
 
-    No-op when *path* is None (default / non-Docker path). I/O errors are swallowed
-    with contextlib.suppress so a disk-full or permissions problem can never kill the
-    scan loop — consistent with other best-effort I/O in ``Scanner.run``.
+    No-op when *path* is None (default / non-Docker path). Thin wrapper over
+    ``heartbeat.write`` that uses this module's ``_now`` so tests can monkeypatch the clock.
     """
-    if path is None:
-        return
-    with contextlib.suppress(Exception):
-        tmp_dir = path.parent
-        ts = repr(_now())
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=tmp_dir, delete=False, suffix=".hb.tmp"
-        ) as f:
-            f.write(ts)
-            tmp_name = f.name
-        os.replace(tmp_name, path)
+    heartbeat.write(path, _now())
 
 
 def _days_to_resolution(markets: list[Market], now: datetime) -> dict[str, int]:
@@ -153,12 +142,16 @@ class Scanner:
         relations: list[Relation] | None = None,
         tags: list[MarketTags] | None = None,
         gas_client: GasClient | None = None,
+        ws_factory: Callable[[], MarketWebSocket] | None = None,
     ) -> None:
         self._settings = settings
         self._gamma = gamma
         self._clob = clob
         self._store = store
         self._notifier = notifier or NullNotifier()
+        # WS connection factory for the streaming runner (injected as a fake in offline tests; the
+        # default builds a real market-channel client at run() time).
+        self._ws_factory = ws_factory
         # Live gas oracle (B2'): an injected client wins; else create one only when enabled.
         # When None, the static config gas defaults are used (the default path).
         self._gas_client = gas_client or (GasClient() if settings.use_dynamic_gas else None)
@@ -369,9 +362,7 @@ class Scanner:
         fetched = await self._fetch_books(needed)
         books = _fresh_books(fetched, now, self._settings.max_book_age_s)
         stale_dropped = len(fetched) - len(books)
-        log.info(
-            "scan_fetched", events=len(events), markets=len(markets), books=len(books)
-        )
+        log.info("scan_fetched", events=len(events), markets=len(markets), books=len(books))
         gas_fixed, gas_per_leg = await self._resolve_gas()
         opps = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
         return await self._emit(opps, by_condition, stale_dropped=stale_dropped)
@@ -389,11 +380,16 @@ class Scanner:
         events, markets, by_condition = await self._discover()
         now = datetime.now(UTC)
         needed = self._needed_tokens(events, markets)
-        # Keep the runner subscribed/resynced to the current discovery set (R6, partial).
+        # Keep the runner subscribed/resynced to the current discovery set (R6, dynamic sub).
+        # Read R2-fresh books from the runner (drops feed-silent tokens); fall back to the raw
+        # cache when no runner is attached (the direct-call unit-test path).
         if self._streaming is not None:
             self._streaming.set_tokens(needed)
-        # Read the live cache, scoped to the tokens this pass cares about.
-        books = {t: b for t, b in self._cache.books().items() if t in needed}
+            cached = self._streaming.fresh_books(self._settings.ws_freshness_s)
+        else:
+            cached = self._cache.books()
+        # Scope to the tokens this pass cares about.
+        books = {t: b for t, b in cached.items() if t in needed}
         gas_fixed, gas_per_leg = await self._resolve_gas()
         candidates = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
 
@@ -437,13 +433,21 @@ class Scanner:
         # read books from the cache and REST-confirm each candidate before emit.
         streaming_task: asyncio.Task[None] | None = None
         if self._streaming_enabled and self._cache is not None:
-            init_events, init_markets, _ = await self._discover()
-            init_tokens = sorted(self._needed_tokens(init_events, init_markets))
+            # Best-effort initial subscription set: a discovery hiccup at startup must not crash the
+            # scanner. On failure the runner starts with no tokens; each scan pass repopulates it
+            # via set_tokens, and the periodic resync fills the cache.
+            try:
+                init_events, init_markets, _ = await self._discover()
+                init_tokens = sorted(self._needed_tokens(init_events, init_markets))
+            except Exception as exc:
+                log.warning("streaming_init_discover_failed", error=repr(exc))
+                init_tokens = []
             self._streaming = StreamingBooks(
                 token_ids=init_tokens,
                 clob=self._clob,
                 settings=self._settings,
                 cache=self._cache,
+                ws_factory=self._ws_factory,
             )
             streaming_task = asyncio.create_task(self._streaming.run(stop))
             log.info("streaming_started", tokens=len(init_tokens))

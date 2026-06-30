@@ -78,16 +78,32 @@ class Settings(BaseSettings):
     # suite is completely unaffected.
     heartbeat_path: Path | None = None
 
-    # --- websocket streaming (WS order-book cache — opt-in; Phase 3 gates on it) ---
-    # When False (the default), the streaming runner is never instantiated and the scan path
-    # is unchanged (REST book reads). When enabled (Phase 3), books are maintained in-memory
-    # from the market-channel websocket with a periodic REST resync safety net.
-    streaming_enabled: bool = False
+    # --- websocket streaming (the DEFAULT architecture; REST is the resync/backup path) ---
+    # WebSocket-first (Jonathan, 2026-07-01): books are maintained in-memory from the
+    # market-channel websocket and a candidate detected off the cache is REST-confirmed before
+    # emit (R1). The full-depth REST resync is the backup/correction path, not the primary read.
+    # Set False only to fall back to the pure-REST poll loop (kept as a backup, not the default).
+    streaming_enabled: bool = True
     # Cadence (seconds) of the full-depth REST resync that corrects any drift the top-of-book
-    # WS integrity check can't catch (the phase-1 deep-drift mitigation).
+    # WS integrity check can't catch (the phase-1 deep-drift mitigation / backup read).
     ws_resync_interval_s: float = 60.0
     # Cap (seconds) on the exponential reconnect backoff after a WS disconnect.
     ws_max_backoff_s: float = 30.0
+    # R5 stall watchdog: force-drop + reconnect a connection that is OPEN (TCP/ping alive) but has
+    # delivered no market message for this long. Across ~160 subscribed tokens real silence this
+    # long means a dead feed, so a forced reconnect+resync is cheap insurance; set generously
+    # above the WS ping cycle so a genuinely quiescent board is not churned. <=0 disables.
+    ws_stall_timeout_s: float = 60.0
+    # R2 streaming freshness guard: at detect time, ignore cached books not refreshed (delta or
+    # resync) within this wall-clock window — distinct from max_book_age_s (the book's own
+    # last-change time). A safety net atop R1's REST-confirm; bounds cross-leg skew at detect
+    # time and stops wasting confirm round-trips on stale-cache phantoms. <=0 disables.
+    ws_freshness_s: float = 30.0
+    # R8 stream-aware liveness: when set (and streaming_enabled), the runner atomically writes the
+    # epoch-seconds of the last applied WS message OR successful resync here, and `polyarb
+    # healthcheck` fails if it goes stale — so a wedged runner (both WS and resync stuck) can't
+    # read healthy while the scan loop keeps pulsing off a frozen cache. None disables (local runs).
+    ws_heartbeat_path: Path | None = None
 
 
 def load_settings() -> Settings:

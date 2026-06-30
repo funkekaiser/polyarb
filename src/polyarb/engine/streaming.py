@@ -1,43 +1,32 @@
 """WebSocket streaming runner: keeps an OrderBookCache fresh from live market data.
 
-``StreamingBooks`` owns the WS connection lifecycle (reconnect + exponential
-backoff with jitter), a periodic REST resync safety net (full-depth correction
-every ``ws_resync_interval_s``), and an on-demand stale-token resync (draining
-``cache.take_stale()`` on a shorter interval).
+This is the **primary** book-read path (WebSocket-first; the REST resync is the backup/
+correction net). ``StreamingBooks`` owns:
+
+- the WS connection lifecycle — reconnect + exponential backoff with jitter;
+- a **stall watchdog (R5)** — a connection that is open (ping-alive) but silent for
+  ``ws_stall_timeout_s`` is force-dropped and reconnected, with a metric, so a dead-but-connected
+  feed cannot quietly degrade the scanner to a 60 s REST poll;
+- **dynamic (un)subscription (R6)** — ``set_tokens`` adds/drops tokens on the *live* connection
+  (no reconnect) and evicts dropped tokens from the cache;
+- a periodic full-depth REST resync + on-demand stale-token resync (the backup read);
+- **streaming observability (R8)** — Prometheus metrics + a WS heartbeat file pulsed on every
+  applied message or successful resync, so ``polyarb healthcheck`` fails when the cache is frozen;
+- **per-token freshness tracking (R2)** — ``fresh_books`` exposes only books refreshed within a
+  wall-clock window, distinct from a book's own last-change timestamp.
 
 Design for testability
 ----------------------
-Every external dependency is injected:
+Every external dependency is injected: ``ws_factory`` (a ``MarketWebSocket`` factory), ``cache``
+(the :class:`~polyarb.engine.bookcache.OrderBookCache`), and ``sleep`` (async sleep callable —
+inject ``asyncio.sleep(0)`` for instant backoff). No real network or wall-clock dependence in the
+control flow; freshness uses the event loop's monotonic clock.
 
-- ``ws_factory`` — callable that returns a fresh :class:`~polyarb.clients.ws.MarketWebSocket`
-  for each connection attempt (inject a fake for offline tests).
-- ``cache``      — the :class:`~polyarb.engine.bookcache.OrderBookCache` to keep fresh
-  (inject a pre-seeded cache to test resync in isolation).
-- ``sleep``      — async sleep callable (default ``asyncio.sleep``; inject
-  ``asyncio.sleep(0)`` or a no-op for deterministic tests with instant backoff).
-
-Scanner integration
--------------------
-Phase 3 wires ``StreamingBooks`` into the scanner; that module is NOT touched
-here.  ``streaming_enabled=False`` (the default) means this runner is never
-instantiated on the existing scan path — no existing behaviour changes.
-
-Lifecycle summary
------------------
-``run(stop)`` starts two concurrent asyncio tasks:
-
-1. **stream loop** — open WS via ``ws_factory()``, feed messages to ``cache.apply()``,
-   reconnect on any error or normal stream end using exponential backoff with jitter.
-   A healthy run (≥ ``_HEALTHY_RUN_S``) resets the backoff counter.
-
-2. **resync loop** — every ``_STALE_CHECK_INTERVAL_S`` seconds: drain
-   ``cache.take_stale()`` and REST-fetch those tokens immediately.  When the
-   elapsed time since the last full resync exceeds ``ws_resync_interval_s``,
-   REST-fetch ALL tracked tokens as a full-depth safety net.  Fetch errors are
-   logged and skipped — never fatal.
-
-On ``stop.set()`` or ``CancelledError``, both tasks are cancelled and the
-runner returns cleanly.
+Lifecycle
+---------
+``run(stop)`` starts two concurrent tasks — the **stream loop** (consume WS → cache) and the
+**resync loop** (REST safety net + heartbeat/metrics). Both stop when ``stop`` is set or the run
+task is cancelled.
 """
 
 from __future__ import annotations
@@ -54,6 +43,7 @@ import structlog
 from polyarb.clients.clob import ClobClient
 from polyarb.clients.ws import MarketWebSocket
 from polyarb.config import Settings
+from polyarb.engine import heartbeat, metrics
 from polyarb.engine.bookcache import RESYNC_BATCH_SIZE, OrderBookCache
 from polyarb.models import OrderBook
 
@@ -67,7 +57,7 @@ _HEALTHY_RUN_S: float = 30.0
 
 # How often the resync loop checks for stale tokens.  Intentionally shorter
 # than ws_resync_interval_s so hash-revert detections trigger a REST fetch
-# quickly.
+# quickly.  Also the cadence at which metrics + the WS heartbeat are refreshed.
 _STALE_CHECK_INTERVAL_S: float = 5.0
 
 # Maximum concurrent REST fetches in a single resync pass.
@@ -75,32 +65,26 @@ _RESYNC_CONCURRENCY: int = RESYNC_BATCH_SIZE
 
 
 class StreamingBooks:
-    """Keeps an :class:`~polyarb.engine.bookcache.OrderBookCache` fresh via
-    a live WS stream + periodic REST resync.
+    """Keeps an :class:`~polyarb.engine.bookcache.OrderBookCache` fresh via a live WS stream +
+    periodic REST resync, with a stall watchdog, dynamic subscription, and liveness metrics.
 
     Parameters
     ----------
     token_ids:
         The CLOB token IDs to subscribe to and maintain.
     clob:
-        A :class:`~polyarb.clients.clob.ClobClient` for REST resync fetches.
-        Must be externally managed (opened/closed by the caller).
+        A :class:`~polyarb.clients.clob.ClobClient` for REST resync fetches (externally managed).
     settings:
-        Runtime configuration (``ws_resync_interval_s``, ``ws_max_backoff_s``).
+        Runtime configuration (``ws_resync_interval_s``, ``ws_max_backoff_s``,
+        ``ws_stall_timeout_s``, ``ws_heartbeat_path``).
     ws_factory:
-        Zero-argument callable that returns a fresh
-        :class:`~polyarb.clients.ws.MarketWebSocket` for each connection
-        attempt.  Defaults to ``lambda: MarketWebSocket()``.  Inject a fake
-        for offline tests.
+        Zero-arg callable returning a fresh :class:`~polyarb.clients.ws.MarketWebSocket` per
+        connection attempt.  Defaults to ``lambda: MarketWebSocket()``.  Inject a fake for tests.
     cache:
-        The cache to populate.  Defaults to a new empty
-        :class:`~polyarb.engine.bookcache.OrderBookCache`.  Inject a
-        pre-seeded cache for tests.
+        The cache to populate.  Defaults to a new empty cache.  Inject a pre-seeded cache for tests.
     sleep:
-        Async sleep callable (signature: ``async (seconds: float) -> None``).
-        Defaults to ``asyncio.sleep``.  Inject ``asyncio.sleep(0)`` or a
-        synchronous no-op (wrapped in ``asyncio.coroutine``) for tests that
-        need instant backoff.
+        Async sleep callable.  Defaults to ``asyncio.sleep``.  Inject ``asyncio.sleep(0)`` for
+        instant backoff in tests.
     """
 
     def __init__(
@@ -113,43 +97,77 @@ class StreamingBooks:
         cache: OrderBookCache | None = None,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     ) -> None:
-        self._token_ids: list[str] = list(token_ids)
+        self._token_ids: list[str] = sorted(set(token_ids))
         self._clob = clob
         self._settings = settings
         self._ws_factory: Callable[[], MarketWebSocket] = ws_factory or (lambda: MarketWebSocket())
         self._cache: OrderBookCache = cache if cache is not None else OrderBookCache()
         self._sleep = sleep
+        # R6 — pending subscribe/unsubscribe ops to apply to the LIVE connection (drained by the
+        # stream loop). A reconnect re-subscribes the full current set, so the queue is cleared on
+        # each fresh connect and only matters between reconnects.
+        self._control: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        # R2 — per-token monotonic time of the last applied delta or resync (loop.time()).
+        self._last_update: dict[str, float] = {}
+        # R8 — wall-clock epoch of the last applied message / last successful resync (heartbeat).
+        self._last_message_wall: float = 0.0
+        self._last_resync_wall: float = 0.0
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     def books(self) -> dict[str, OrderBook]:
-        """Return a snapshot of all currently-cached order books."""
+        """Return a snapshot of all currently-cached order books (no freshness filter)."""
         return self._cache.books()
 
-    def set_tokens(self, token_ids: Iterable[str]) -> None:
-        """Update the tracked token set (R6, partial).
+    def fresh_books(self, max_age_s: float | None = None) -> dict[str, OrderBook]:
+        """Books refreshed (delta or resync) within ``max_age_s`` wall-seconds (R2).
 
-        The new set is used by the periodic REST resync *immediately* (so newly-discovered markets
-        get books within one resync interval) and by the WS subscription on the next (re)connect;
-        tokens that dropped out of discovery are evicted from the cache to keep it bounded. Dynamic
-        WS subscribe/unsubscribe *without* a reconnect is a follow-up (R6 remaining).
+        Uses the event loop's monotonic clock (same clock the runner stamps with), so it is
+        immune to system-clock changes. ``max_age_s <= 0`` (or None → ``ws_freshness_s``) disables
+        the guard and returns every cached book. A token with no recorded update time is treated as
+        stale and dropped — only ever a false-negative (a missed opp), never a fabricated one.
+        """
+        if max_age_s is None:
+            max_age_s = self._settings.ws_freshness_s
+        all_books = self._cache.books()
+        if max_age_s <= 0:
+            return all_books
+        now = asyncio.get_running_loop().time()
+        return {
+            tok: book
+            for tok, book in all_books.items()
+            if now - self._last_update.get(tok, float("-inf")) <= max_age_s
+        }
+
+    def set_tokens(self, token_ids: Iterable[str]) -> None:
+        """Update the tracked token set (R6) — dynamic subscribe/unsubscribe without a reconnect.
+
+        Diffs against the current set: newly-discovered tokens are ``subscribe``\\d and dropped
+        tokens are ``unsubscribe``\\d on the live connection (ops queued for the stream loop), and
+        dropped tokens are evicted from the cache + freshness map to keep both bounded. The new set
+        also feeds the next periodic REST resync and the next (re)connect's initial subscription.
         """
         new = sorted(set(token_ids))
         if new == self._token_ids:
             return
-        dropped = set(self._token_ids) - set(new)
+        added = sorted(set(new) - set(self._token_ids))
+        dropped = sorted(set(self._token_ids) - set(new))
         self._token_ids = new
+        if added:
+            self._control.put_nowait({"operation": "subscribe", "assets_ids": added})
+        if dropped:
+            self._control.put_nowait({"operation": "unsubscribe", "assets_ids": dropped})
         for token_id in dropped:
             self._cache.evict(token_id)
+            self._last_update.pop(token_id, None)
 
     async def run(self, stop: asyncio.Event | None = None) -> None:
         """Drive the runner until ``stop`` is set or the task is cancelled.
 
-        Runs two concurrent asyncio tasks (stream loop + resync loop).  Both
-        tasks shut down when ``stop`` is set.  On ``CancelledError`` the stop
-        event is signalled so the resync task also exits cleanly.
+        Runs the stream loop + resync loop concurrently; both shut down when ``stop`` is set. On
+        ``CancelledError`` the stop event is signalled so the resync task also exits cleanly.
         """
         if stop is None:
             stop = asyncio.Event()
@@ -171,31 +189,51 @@ class StreamingBooks:
     # ------------------------------------------------------------------
 
     async def _stream_loop(self, stop: asyncio.Event) -> None:
-        """Open WS, feed messages to cache; reconnect with exponential backoff.
+        """Open WS, feed messages to the cache; reconnect with exponential backoff.
 
-        Backoff starts at ``_BASE_BACKOFF_S``, doubles on each disconnect (with
-        25 % jitter), and is capped at ``settings.ws_max_backoff_s``.  A
-        healthy run (stream open for ≥ ``_HEALTHY_RUN_S`` seconds) resets the
-        backoff to the base value.
+        Each inbound message is awaited with a ``ws_stall_timeout_s`` deadline (R5): if the open
+        connection delivers nothing within it, the connection is force-dropped and reconnected (it
+        is alive at the TCP/ping layer but the feed has gone silent). Backoff starts at
+        ``_BASE_BACKOFF_S``, doubles per disconnect (25 % jitter), caps at ``ws_max_backoff_s``, and
+        resets after a healthy run (≥ ``_HEALTHY_RUN_S``).
         """
         backoff = _BASE_BACKOFF_S
+        stall_timeout = self._settings.ws_stall_timeout_s
 
         while not stop.is_set():
             ws = self._ws_factory()
+            metrics.WS_RECONNECTS.inc()
             loop = asyncio.get_running_loop()
             t_start = loop.time()
+            # A fresh connection re-subscribes the full current set in its handshake, so any ops
+            # queued for the prior connection are obsolete — drop them to avoid spurious sends.
+            self._drain_control()
+            agen = ws.stream(self._token_ids, control=self._control)
 
             try:
-                async for msg in ws.stream(self._token_ids):
-                    if stop.is_set():
-                        return
-                    self._cache.apply(msg)
-                # Stream ended without error (server closed cleanly).
-                log.info("ws_stream_ended")
+                while not stop.is_set():
+                    try:
+                        if stall_timeout > 0:
+                            msg = await asyncio.wait_for(anext(agen), timeout=stall_timeout)
+                        else:
+                            msg = await anext(agen)
+                    except StopAsyncIteration:
+                        log.info("ws_stream_ended")  # server closed cleanly
+                        break
+                    except TimeoutError:
+                        metrics.WS_STALLS.inc()
+                        log.warning("ws_stall", timeout_s=stall_timeout)
+                        break  # connected but silent → reconnect + resync
+                    self._ingest(msg)
             except asyncio.CancelledError:
+                with contextlib.suppress(Exception):
+                    await agen.aclose()
                 return
             except Exception as exc:
                 log.warning("ws_disconnect", error=repr(exc))
+            finally:
+                with contextlib.suppress(Exception):
+                    await agen.aclose()
 
             if stop.is_set():
                 return
@@ -213,25 +251,40 @@ class StreamingBooks:
 
             backoff = min(backoff * 2.0, self._settings.ws_max_backoff_s)
 
+    def _ingest(self, msg: Any) -> None:
+        """Apply one WS message to the cache and stamp freshness/liveness (R2/R8)."""
+        changed = self._cache.apply(msg)
+        if not changed:
+            return
+        now = asyncio.get_running_loop().time()
+        for tok in changed:
+            self._last_update[tok] = now
+        self._last_message_wall = heartbeat.now_epoch()
+
+    def _drain_control(self) -> None:
+        """Discard any queued control ops (used on a fresh connect — see ``_stream_loop``)."""
+        while True:
+            try:
+                self._control.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
     # ------------------------------------------------------------------
     # Internal: resync loop
     # ------------------------------------------------------------------
 
     async def _resync_loop(self, stop: asyncio.Event) -> None:
-        """Drain stale tokens on demand + periodic full resync.
+        """Drain stale tokens on demand + periodic full resync; refresh metrics + WS heartbeat.
 
-        Wakes every ``_STALE_CHECK_INTERVAL_S`` seconds.  On each wake:
-        1. Drain ``cache.take_stale()`` and REST-fetch those tokens immediately
-           (on-demand, driven by A3 hash-revert or other staleness signals).
-        2. If ``ws_resync_interval_s`` has elapsed since the last full resync,
-           REST-fetch ALL tracked tokens as a full-depth safety net.
-
-        Individual fetch errors (``httpx.HTTPError``) are logged and skipped;
-        they never abort the loop.
+        Wakes every ``_STALE_CHECK_INTERVAL_S`` seconds. Each wake: (1) drain
+        ``cache.take_stale()`` and REST-fetch those tokens; (2) every ``ws_resync_interval_s``,
+        REST-fetch ALL tracked tokens (full-depth backup read); (3) publish liveness metrics and
+        write the WS heartbeat from the freshest of (last message, last resync). Fetch errors are
+        logged and skipped — never fatal.
         """
-        # Intentionally 0.0 so the first wake does a full REST resync immediately: it guarantees
-        # a complete book set at startup (belt-and-suspenders with the WS initial_dump) and is no
-        # heavier than the non-streaming REST scan path. Thereafter it fires every interval.
+        # 0.0 ⇒ the first wake does a full REST resync immediately, guaranteeing a complete book
+        # set at startup (belt-and-suspenders with the WS initial_dump) at no more cost than the
+        # non-streaming REST scan path. Thereafter it fires every interval.
         last_full_resync = 0.0
         loop = asyncio.get_running_loop()
 
@@ -240,50 +293,56 @@ class StreamingBooks:
             if stop.is_set():
                 return
 
-            # On-demand: flush stale tokens first (they have a known integrity
-            # problem and benefit from being resynced quickly).
+            # On-demand: flush stale tokens first (known integrity problem, resync quickly).
             stale = self._cache.take_stale()
             if stale:
                 log.info("resync_stale_tokens", count=len(stale))
                 await self._resync_tokens(sorted(stale))
 
-            # Periodic full resync: correct any drift the WS stream may have
-            # introduced (deep levels, hash reverts not yet seen, etc.).
+            # Periodic full resync: correct any drift the top-of-book check can't see.
             now = loop.time()
             if now - last_full_resync >= self._settings.ws_resync_interval_s:
                 log.info("resync_full", token_count=len(self._token_ids))
                 await self._resync_tokens(self._token_ids)
                 last_full_resync = now
 
-    async def _resync_tokens(self, tokens: Sequence[str]) -> None:
-        """REST-fetch books for ``tokens`` and seed the cache.
+            self._publish_liveness()
 
-        Fetches are throttled to ``_RESYNC_CONCURRENCY`` concurrent requests
-        (the ClobClient has its own rate limiter; the semaphore prevents a
-        thundering-herd burst against the exchange).  Errors are logged and
-        skipped — a failed fetch leaves the cached book unchanged.
+    def _publish_liveness(self) -> None:
+        """Refresh R8 metrics and write the WS heartbeat (freshest of message / resync)."""
+        metrics.WS_TOKENS.set(self._cache.token_count)
+        metrics.WS_SKIPS.set(self._cache.skip_count)
+        fresh_wall = max(self._last_message_wall, self._last_resync_wall)
+        if fresh_wall > 0.0:
+            metrics.WS_LAST_MESSAGE.set(fresh_wall)
+            heartbeat.write(self._settings.ws_heartbeat_path, fresh_wall)
+
+    async def _resync_tokens(self, tokens: Sequence[str]) -> None:
+        """REST-fetch books for ``tokens`` and seed the cache (the backup read path).
+
+        Throttled to ``_RESYNC_CONCURRENCY`` concurrent requests (the ClobClient has its own rate
+        limiter; the semaphore prevents a thundering-herd burst). Each failed fetch increments
+        ``WS_RESYNC_ERRORS`` and leaves the cached book unchanged; a successful one stamps freshness
+        so resync keeps a token alive even while its WS feed is quiet.
         """
         if not tokens:
             return
-
+        metrics.WS_RESYNCS.inc()
         sem = asyncio.Semaphore(_RESYNC_CONCURRENCY)
+        loop = asyncio.get_running_loop()
 
         async def _one(token_id: str) -> None:
             async with sem:
                 try:
                     book = await self._clob.get_order_book(token_id)
                     self._cache.seed(book)
+                    self._last_update[token_id] = loop.time()
+                    self._last_resync_wall = heartbeat.now_epoch()
                 except httpx.HTTPError as exc:
-                    log.warning(
-                        "resync_fetch_error",
-                        token_id=token_id,
-                        error=repr(exc),
-                    )
+                    metrics.WS_RESYNC_ERRORS.inc()
+                    log.warning("resync_fetch_error", token_id=token_id, error=repr(exc))
                 except Exception as exc:
-                    log.warning(
-                        "resync_unexpected_error",
-                        token_id=token_id,
-                        error=repr(exc),
-                    )
+                    metrics.WS_RESYNC_ERRORS.inc()
+                    log.warning("resync_unexpected_error", token_id=token_id, error=repr(exc))
 
         await asyncio.gather(*(_one(t) for t in tokens))

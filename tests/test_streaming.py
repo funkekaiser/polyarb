@@ -90,16 +90,25 @@ class FakeWS:
         *,
         error: Exception | None = None,
         on_stream_end: Any = None,
+        hang_after: bool = False,
     ) -> None:
         self._messages = messages
         self._error = error
         self._on_stream_end = on_stream_end
+        self._hang_after = hang_after
 
-    async def stream(self, token_ids: Sequence[str]) -> AsyncIterator[dict[str, Any]]:
+    async def stream(
+        self,
+        token_ids: Sequence[str],
+        *,
+        control: Any = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         for msg in self._messages:
             yield msg
         if self._on_stream_end is not None:
             self._on_stream_end()
+        if self._hang_after:
+            await asyncio.Event().wait()  # open but silent — exercises the R5 stall watchdog
         if self._error is not None:
             raise self._error
 
@@ -533,3 +542,107 @@ def test_set_tokens_evicts_dropped_tokens() -> None:
     assert "old" not in cache.books()  # dropped from discovery → evicted
     assert "keep" in cache.books()  # still tracked → retained
     sb.set_tokens(["new", "keep"])  # same set, different order → idempotent, no error
+
+
+# ---------------------------------------------------------------------------
+# R5 — stall watchdog: a connected-but-silent feed is force-reconnected
+# ---------------------------------------------------------------------------
+
+
+def test_stall_watchdog_forces_reconnect() -> None:
+    """A WS that yields then goes silent past ws_stall_timeout_s is dropped + reconnected (R5)."""
+    from polyarb.engine import metrics
+
+    async def go() -> int:
+        factory_log: list[int] = []
+        stop = asyncio.Event()
+
+        def factory() -> FakeWS:
+            n = len(factory_log) + 1
+            factory_log.append(n)
+            if n >= 2:
+                stop.set()  # exit after the watchdog forced a second connection
+            # First connection: yield one msg then hang (open but silent) → stall.
+            return FakeWS([_book_msg("tok1")], hang_after=True)
+
+        runner = _make_runner(
+            ["tok1"],
+            ws_factory=factory,
+            settings=_settings(ws_stall_timeout_s=0.05, ws_resync_interval_s=9999.0),
+        )
+        before = metrics.WS_STALLS._value.get()  # type: ignore[attr-defined]
+        await asyncio.wait_for(runner.run(stop), timeout=5.0)
+        return int(metrics.WS_STALLS._value.get() - before)  # type: ignore[attr-defined]
+
+    stalls = asyncio.run(go())
+    assert stalls >= 1, "stall watchdog must have fired at least once"
+
+
+# ---------------------------------------------------------------------------
+# R2 — fresh_books drops feed-silent tokens
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_books_filters_stale_tokens() -> None:
+    """fresh_books returns only tokens refreshed within the window; unstamped/old ones drop."""
+
+    async def go() -> dict[str, Any]:
+        cache = OrderBookCache()
+        cache.seed(_book("stale", bids=[("0.4", "100")]))  # seeded directly → never stamped
+        runner = _make_runner(["fresh", "stale"], cache=cache, ws_factory=lambda: FakeWS([]))
+        runner._ingest(_book_msg("fresh", bids=[("0.5", "100")]))  # stamps 'fresh' at loop.time()
+        return {
+            "all": set(runner.books()),
+            "fresh_only": set(runner.fresh_books(30.0)),
+            "disabled": set(runner.fresh_books(0.0)),
+        }
+
+    out = asyncio.run(go())
+    assert out["all"] == {"fresh", "stale"}
+    assert out["fresh_only"] == {"fresh"}  # 'stale' has no recent update → dropped
+    assert out["disabled"] == {"fresh", "stale"}  # window<=0 disables the guard
+
+
+# ---------------------------------------------------------------------------
+# R6 — set_tokens enqueues subscribe/unsubscribe ops for the live connection
+# ---------------------------------------------------------------------------
+
+
+def test_set_tokens_enqueues_dynamic_sub_ops() -> None:
+    """Adding/dropping tokens queues subscribe/unsubscribe ops (R6, dynamic resubscribe)."""
+    sb = StreamingBooks(
+        ["a", "b"],
+        clob=FakeClob({}),  # type: ignore[arg-type]
+        settings=_settings(),
+    )
+    sb.set_tokens(["b", "c"])  # +c, -a
+    ops = []
+    while not sb._control.empty():
+        ops.append(sb._control.get_nowait())
+    assert {"operation": "subscribe", "assets_ids": ["c"]} in ops
+    assert {"operation": "unsubscribe", "assets_ids": ["a"]} in ops
+
+
+# ---------------------------------------------------------------------------
+# R8 — resync/message liveness pulses the WS heartbeat file
+# ---------------------------------------------------------------------------
+
+
+def test_publish_liveness_writes_ws_heartbeat(tmp_path: Any) -> None:
+    """_publish_liveness writes the freshest message/resync epoch to ws_heartbeat_path (R8)."""
+    import time
+
+    hb = tmp_path / "ws-heartbeat"
+    sb = StreamingBooks(
+        ["a"],
+        clob=FakeClob({}),  # type: ignore[arg-type]
+        settings=_settings(ws_heartbeat_path=hb),
+    )
+    # Nothing applied yet → no write (don't certify liveness before the first refresh).
+    sb._publish_liveness()
+    assert not hb.exists()
+    # Simulate a successful resync, then publish → heartbeat written with a recent timestamp.
+    sb._last_resync_wall = time.time()
+    sb._publish_liveness()
+    assert hb.exists()
+    assert abs(float(hb.read_text().strip()) - time.time()) < 5.0

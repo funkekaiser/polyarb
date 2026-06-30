@@ -126,7 +126,11 @@ def _transport(books: dict[str, dict], events: list[dict] | None = None) -> http
 
 
 def _settings() -> Settings:
+    # streaming_enabled=False: these helpers exercise the REST backup path (scan_once / run with no
+    # injected WS). The default streaming path is covered by _streaming_settings() and the
+    # injected-fake-WS run test below.
     return Settings(
+        streaming_enabled=False,
         min_profit_bps=Decimal(1),
         min_notional_usdc=Decimal(1),
         dedupe_cooldown_seconds=0.0,
@@ -236,6 +240,51 @@ def test_streaming_scan_drops_unconfirmed_candidate() -> None:
     opps, store = _run_streaming_scan([yes, no], rest)
     assert opps == []
     assert store.count() == 0
+    store.close()
+
+
+class _NoopWS:
+    """A ws_factory product whose stream ends immediately (no messages) — lets a streaming run()
+    start/stop the runner offline without touching the network or the pre-seeded cache."""
+
+    async def stream(self, token_ids, *, control=None):  # type: ignore[no-untyped-def]
+        return
+        yield  # pragma: no cover — makes this an async generator
+
+
+def test_streaming_run_offline_end_to_end(tmp_path) -> None:
+    """Scanner.run(passes=1) on the streaming (default) path: cache → detect → REST-confirm → emit,
+    with an injected fake WS so no network is touched. ws_freshness_s=0 disables the R2 guard so
+    the pre-seeded books are visible without runner-stamped update times."""
+    yes = OrderBook.model_validate(_book("Y", ask="0.40", bid="0.30"))
+    no = OrderBook.model_validate(_book("N", ask="0.50", bid="0.40"))
+    rest = {"Y": _book("Y", ask="0.40", bid="0.30"), "N": _book("N", ask="0.50", bid="0.40")}
+    transport = _transport(rest)
+    store = SqliteStore(":memory:")
+    settings = _streaming_settings().model_copy(update={"ws_freshness_s": 0.0})
+
+    async def go() -> list:
+        async with (
+            httpx.AsyncClient(transport=transport) as gamma_http,
+            httpx.AsyncClient(transport=transport) as clob_http,
+        ):
+            scanner = Scanner(
+                settings,
+                gamma=GammaClient(client=gamma_http),
+                clob=ClobClient(client=clob_http),
+                store=store,
+                notifier=NullNotifier(),
+                ws_factory=lambda: _NoopWS(),  # type: ignore[arg-type, return-value]
+            )
+            assert scanner._cache is not None
+            scanner._cache.seed(yes)
+            scanner._cache.seed(no)
+            await scanner.run(passes=1)
+            return scanner._store.recent(10)  # type: ignore[attr-defined]
+
+    persisted = asyncio.run(go())
+    assert len(persisted) == 1
+    assert persisted[0].detector == DetectorKind.COMPLEMENT
     store.close()
 
 
@@ -768,6 +817,57 @@ def test_healthcheck_fail_no_path_configured(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["healthcheck"])
     assert result.exit_code != 0, "expected non-zero exit when path is not configured"
+
+
+def test_healthcheck_streaming_ok_both_fresh(tmp_path) -> None:
+    """R8: with streaming on, healthcheck passes only when BOTH heartbeats are fresh."""
+    import time
+
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    hb = tmp_path / "scan-hb"
+    ws_hb = tmp_path / "ws-hb"
+    hb.write_text(repr(time.time()))
+    ws_hb.write_text(repr(time.time()))
+
+    result = CliRunner().invoke(
+        app,
+        ["healthcheck"],
+        env={
+            "HEARTBEAT_PATH": str(hb),
+            "WS_HEARTBEAT_PATH": str(ws_hb),
+            "STREAMING_ENABLED": "true",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert "ws heartbeat" in result.output
+
+
+def test_healthcheck_streaming_fail_ws_frozen(tmp_path) -> None:
+    """R8: a fresh scan loop but a frozen WS cache (stale ws-heartbeat) must fail the check."""
+    import time
+
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    hb = tmp_path / "scan-hb"
+    ws_hb = tmp_path / "ws-hb"
+    hb.write_text(repr(time.time()))  # scan loop alive
+    ws_hb.write_text(repr(0.0))  # WS cache frozen since the epoch
+
+    result = CliRunner().invoke(
+        app,
+        ["healthcheck"],
+        env={
+            "HEARTBEAT_PATH": str(hb),
+            "WS_HEARTBEAT_PATH": str(ws_hb),
+            "STREAMING_ENABLED": "true",
+        },
+    )
+    assert result.exit_code != 0, "frozen WS cache must fail the stream-aware healthcheck"
 
 
 def test_scan_once_survives_gas_oracle_failure_end_to_end() -> None:

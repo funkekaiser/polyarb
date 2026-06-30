@@ -185,6 +185,11 @@ class OrderBookCache:
 
         return changed
 
+    @property
+    def token_count(self) -> int:
+        """Number of tokens currently held in the cache (R8 metric / liveness signal)."""
+        return len(self._state)
+
     def book(self, token_id: str) -> OrderBook | None:
         """Materialise the current book for *token_id*, or ``None`` if unknown."""
         state = self._state.get(token_id)

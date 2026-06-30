@@ -137,44 +137,60 @@ def replay(
 
 @app.command()
 def healthcheck() -> None:
-    """Exit 0 if the scan loop has pulsed recently; exit 1 if stale/missing (Docker HEALTHCHECK).
+    """Exit 0 if the scanner is alive; exit 1 if stale/missing (Docker HEALTHCHECK).
 
-    Reads HEARTBEAT_PATH from Settings and checks that the recorded timestamp is within
-    ``max(2 * SCAN_INTERVAL_SECONDS, 120)`` seconds.  Missing / unreadable / stale file
-    → non-zero exit with a diagnostic on stderr.  Side-effect-free (read-only).
+    Checks the **scan heartbeat** (HEARTBEAT_PATH, D7) — the loop pulsed within
+    ``max(2 * SCAN_INTERVAL_SECONDS, 120)`` s — and, when streaming is the active path
+    (STREAMING_ENABLED with WS_HEARTBEAT_PATH set), also the **WS heartbeat** (R8): the book
+    cache was refreshed by a WS message or a successful resync within ``max(2 *
+    WS_RESYNC_INTERVAL_S, 120)`` s. A frozen cache (both WS and resync wedged) therefore fails the
+    check even while the scan loop keeps pulsing off stale books. Missing / unreadable / stale
+    file → non-zero exit with a diagnostic on stderr. Side-effect-free (read-only).
     """
-    from datetime import UTC, datetime
+    from pathlib import Path
 
     from polyarb.config import load_settings
+    from polyarb.engine import heartbeat
 
     settings = load_settings()
-    path = settings.heartbeat_path
-    if path is None:
-        typer.echo("HEARTBEAT_PATH is not configured — set it in the environment or .env", err=True)
-        raise typer.Exit(code=1)
 
-    freshness_window = max(2.0 * settings.scan_interval_seconds, 120.0)
+    def _check(path: Path | None, label: str, window: float) -> str:
+        """Return an OK summary, or echo a diagnostic and exit non-zero."""
+        if path is None:
+            typer.echo(f"{label} path is not configured — set it in the environment", err=True)
+            raise typer.Exit(code=1)
+        try:
+            age = heartbeat.age(path)
+        except FileNotFoundError:
+            typer.echo(f"{label} file not found: {path}", err=True)
+            raise typer.Exit(code=1) from None
+        except Exception as exc:
+            typer.echo(f"{label} file unreadable ({path}): {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if age > window:
+            typer.echo(
+                f"{label} stale: {age:.1f}s old (window={window:.0f}s)",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        return f"{label} {age:.1f}s old"
 
-    try:
-        raw = path.read_text().strip()
-        recorded_ts = float(raw)
-    except FileNotFoundError:
-        typer.echo(f"heartbeat file not found: {path}", err=True)
-        raise typer.Exit(code=1) from None
-    except Exception as exc:
-        typer.echo(f"heartbeat file unreadable ({path}): {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-    now_ts = datetime.now(UTC).timestamp()
-    age = now_ts - recorded_ts
-    if age > freshness_window:
-        typer.echo(
-            f"heartbeat stale: {age:.1f}s since last pass (window={freshness_window:.0f}s)",
-            err=True,
+    parts = [
+        _check(
+            settings.heartbeat_path,
+            "scan heartbeat",
+            max(2.0 * settings.scan_interval_seconds, 120.0),
         )
-        raise typer.Exit(code=1)
-
-    typer.echo(f"ok: heartbeat {age:.1f}s old (window={freshness_window:.0f}s)")
+    ]
+    if settings.streaming_enabled and settings.ws_heartbeat_path is not None:
+        parts.append(
+            _check(
+                settings.ws_heartbeat_path,
+                "ws heartbeat",
+                max(2.0 * settings.ws_resync_interval_s, 120.0),
+            )
+        )
+    typer.echo("ok: " + ", ".join(parts))
 
 
 if __name__ == "__main__":

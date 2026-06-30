@@ -27,6 +27,29 @@ LAST_PASS = Gauge(
     "Unix time of the last completed scan pass (success or error)",
 )
 
+# --- WebSocket streaming observability (R8) -------------------------------------------------
+# These make the now-default streaming path observable: a connected-but-silent feed, reconnect
+# churn, and resync health are otherwise invisible (the scan loop keeps pulsing off the cache).
+
+WS_LAST_MESSAGE = Gauge(
+    "polyarb_ws_last_message_timestamp_seconds",
+    "Unix time the streaming runner last applied a WS message or successful resync",
+)
+WS_RECONNECTS = Counter("polyarb_ws_reconnects_total", "WS (re)connection attempts")
+WS_STALLS = Counter(
+    "polyarb_ws_stalls_total",
+    "WS connections force-dropped by the stall watchdog (connected but silent)",
+)
+WS_RESYNCS = Counter("polyarb_ws_resyncs_total", "REST resync passes (stale-drain or full)")
+WS_RESYNC_ERRORS = Counter(
+    "polyarb_ws_resync_errors_total", "Individual REST resync fetches that failed"
+)
+WS_TOKENS = Gauge("polyarb_ws_tracked_tokens", "Tokens currently materialised in the book cache")
+WS_SKIPS = Gauge(
+    "polyarb_ws_skipped_entries_total",
+    "Cumulative malformed/unparseable WS delta entries skipped by the cache",
+)
+
 
 def start_metrics_server(port: int) -> None:
     """Start the Prometheus ``/metrics`` HTTP endpoint on ``port`` (background thread)."""
