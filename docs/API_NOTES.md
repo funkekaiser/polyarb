@@ -133,3 +133,42 @@ token bucket + backoff defensively (Cloudflare can still 429).
 `get_order_book(token_id)`, `get_order_books([BookParams(...)])`, `get_simplified_markets()`
 — all no-auth. We will call the equivalent REST endpoints directly via `httpx` rather than
 depend on the archived client.
+
+## Gas — who pays, and our config defaults (verified 2026-06-30)
+
+**Verdict: on the relayer path, Polymarket pays gas; true user cost ≈ $0.** Polymarket uses a
+GSN-style meta-transaction relayer: the user signs locally, the relayer broadcasts and **pays
+the Polygon gas** (docs.polymarket.com/trading/gasless). Gas responsibility by wallet:
+
+| Wallet type | Gas payer |
+|---|---|
+| Proxy (Magic/Google login) | **Relayer (Polymarket)** |
+| Safe (Gnosis) | **Relayer** |
+| Deposit wallet (API V2 default) | **Relayer** |
+| Raw EOA (bare private key) | **User pays** |
+
+- **CLOB orders**: placement/cancel are off-chain signed messages (no gas, always). Fill
+  *settlement* (`matchOrders`) is relayer-paid for proxy/Safe/deposit wallets.
+- **CTF split / merge / redeem** (incl. NegRisk merge/redeem): explicitly relayer-covered
+  ("CTF operations: Split, merge, and redeem positions" — docs.polymarket.com/trading/gasless;
+  github.com/Polymarket/agent-skills gasless.md).
+
+**Config defaults (`config.py`):** `gas_estimate=0.02`, `gas_per_leg_estimate=0.05` USDC — a
+deliberately conservative *ceiling* (true relayer cost ≈ $0), set non-zero only to cover the
+raw-EOA / undocumented relayer-cap edge. Derivation (conservative): gas units from real
+Polygonscan receipts — CTF merge ~125–143k, redeem ~170–192k, NegRisk redeem ~208k, exchange
+`matchOrders` 380–670k — at a ceiling 600 gwei (historical floor ~25–30; mid-2026 congested at
+245–500) and POL ≈ $0.10 ⇒ ~$0.015 fixed (250k gas) and ~$0.042/leg (700k gas), rounded up.
+**If the executor is confirmed relayer-only, set both ~0.**
+
+**Live (dynamic) gas — keyless endpoints for the future `use_dynamic_gas` client:**
+- Polygon gas price (gwei): `GET https://gasstation.polygon.technology/v2` → use `standard.maxFee`
+  (or `fast.maxFee`); poll ≤ 1/block (~2s). (The old polygonscan oracle is dead → Etherscan v2,
+  which now needs a key; prefer the Gas Station.)
+- POL/USD: `GET https://api.coingecko.com/api/v3/simple/price?ids=polygon-ecosystem-token&vs_currencies=usd`
+  → `["polygon-ecosystem-token"]["usd"]`. (The old `matic-network` id is deprecated → `{}`.)
+
+**Unconfirmed / source later:** relayer daily gas-subsidy cap (exists, $ figure unpublished —
+ask Polymarket / Builder Program); NegRisk `mergePositions`/`convertPositions` gas (no recent
+on-chain sample — capture a receipt if executed); EOA per-leg attribution (`matchOrders`
+settles the whole match, so 0.05/leg over-counts — refine against the real execution path).

@@ -47,6 +47,9 @@ Order placement (Phase 5) is not yet built.
 
 ## Run with Docker
 
+> For a full operator reference (local vs Docker, persistence, all env vars, logs, graceful
+> stop), see [docs/RUNNING.md](docs/RUNNING.md).
+
 The scanner ships as a self-contained image. SQLite history persists in a named volume so
 it survives container restarts and image rebuilds.
 

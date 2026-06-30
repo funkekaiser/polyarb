@@ -35,10 +35,13 @@ class Settings(BaseSettings):
     max_markets_per_scan: int = 80
     # Per-execution gas (USDC), applied once per opportunity, scaled by leg count (B2'):
     #   gas = gas_estimate (fixed: merge/redeem) + gas_per_leg_estimate · N (one taker fill/leg).
-    # Both default 0 (gas off) — set real Polygon numbers to enable. A single fixed charge
-    # under-prices large baskets, so the per-leg term matters most for high-N opps.
-    gas_estimate: Decimal = Decimal(0)
-    gas_per_leg_estimate: Decimal = Decimal(0)
+    # NOTE: via Polymarket's relayer (proxy/Safe/deposit wallets) gas is RELAYER-PAID — including
+    # CTF split/merge/redeem — so the true user cost is ≈$0 (see docs/API_NOTES.md, dated). These
+    # small non-zero defaults are a conservative ceiling for the raw-EOA / relayer-cap edge; on
+    # Polygon they're pennies, negligible vs MIN_NOTIONAL. Set ~0 if you confirm relayer-only; a
+    # future dynamic gas client (use_dynamic_gas) can override from a live oracle.
+    gas_estimate: Decimal = Decimal("0.02")
+    gas_per_leg_estimate: Decimal = Decimal("0.05")
     # A3 — staleness gate: drop order books whose CLOB last-change timestamp is older than this.
     # This is a *gross-staleness / corrupt-snapshot* net (the CLOB has served hours-old
     # 0.01/0.99 snapshots that would manufacture phantom arbs), NOT a fine freshness guarantee:

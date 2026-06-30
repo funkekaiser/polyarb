@@ -32,6 +32,7 @@ it.
 - **`docs/TESTING.md`** — how correctness is defined, the test-suite map, the adversarial
   bug-hunt findings + fixes, known limitations, and where bugs are likely to hide.
 - **`docs/STRATEGY_BACKLOG.md`** — the strategy/worklist of committee findings not yet implemented.
+- **`docs/RUNNING.md`** — operator guide: local vs Docker, persistence, env-var reference, logs, graceful stop.
 - **`DEMO.md`** — the guided, user-facing tour of the working commands.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
