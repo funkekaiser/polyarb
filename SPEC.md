@@ -149,7 +149,7 @@ polyarb/
     execution/                 # GATED — default OFF
       guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm  # Phase 5 — gated scaffold, default OFF
       executor.py              # multi-leg submission via polymarket-client (only behind guard)  # Phase 5 — gated scaffold, default OFF
-    cli.py                     # `scan` (dry-run default), `backtest`, `replay`, `record`
+    cli.py                     # scan (dry-run default) · record · backtest · ledger · settle · replay · healthcheck · version
   tests/
     fixtures/                  # recorded API JSON
     test_complement.py
