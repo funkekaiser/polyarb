@@ -164,8 +164,8 @@ def test_ladder_skips_equal_bounds() -> None:
 # a sports nesting where make-playoffs (B) settles before win-championship (A). Discriminating:
 # B=10, A=100 → D3 gives 100; the old B-with-fallback gave 10.)
 def test_dependency_horizon_is_max_of_legs() -> None:
-    a = make_market("0xA", yes="yA", no="nA")
-    b = make_market("0xB", yes="yB", no="nB")
+    a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     snap = Snapshot(
         markets=[a, b],
         relations=[Relation("0xA", "0xB", "A ⇒ B")],
@@ -389,8 +389,8 @@ def test_dependency_detector_suppresses_gas_negative_opp() -> None:
     With gas=25.00 (wipes the edge): suppress.
     With gas=0: emit.
     """
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     books = {
         "nA": make_book("nA", asks=[("0.30", "50")]),
@@ -413,8 +413,8 @@ def test_dependency_detector_skips_crossed_book() -> None:
 
     Test both legs: crossed NO_A (case a) and crossed YES_B (case b).
     """
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     markets = [market_a, market_b]
     relations = [relation]

@@ -33,9 +33,13 @@ def make_market(
     yes: str = "y",
     no: str = "n",
     fee_rate: float | None = None,
+    fee_type: str | None = None,
     group_item_title: str | None = None,
     neg_risk: bool = False,
 ) -> Market:
+    # fee_type drives resolution-risk classification (crypto/sports/price → OBJECTIVE); pass it
+    # explicitly to get an OBJECTIVE market WITHOUT fees. Default: derive from fee_rate as before.
+    resolved_fee_type = fee_type or ("crypto_fees_v2" if fee_rate is not None else None)
     return Market(
         id="1",
         condition_id=condition_id,
@@ -44,7 +48,7 @@ def make_market(
         clob_token_ids=[yes, no],
         neg_risk=neg_risk,
         fees_enabled=fee_rate is not None,
-        fee_type="crypto_fees_v2" if fee_rate is not None else None,
+        fee_type=resolved_fee_type,
         fee_rate=Decimal(str(fee_rate)) if fee_rate is not None else None,
         group_item_title=group_item_title,
     )

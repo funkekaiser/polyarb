@@ -22,8 +22,8 @@ def test_dependency_profit_formula() -> None:
 
 
 def _snapshot(a_no_ask: str, b_yes_ask: str) -> Snapshot:
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     return Snapshot(
         markets=[market_a, market_b],
@@ -66,8 +66,8 @@ def _snapshot_multilevel(
     a_no_levels: list[tuple[str, str]],
     b_yes_levels: list[tuple[str, str]],
 ) -> Snapshot:
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     return Snapshot(
         markets=[market_a, market_b],
@@ -105,8 +105,8 @@ def test_depth_walk_captures_multiple_levels() -> None:
 
 def test_crossed_no_a_book_skips_relation() -> None:
     """A crossed NO_A book (bid >= ask) causes the relation to be skipped."""
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     snap = Snapshot(
         markets=[market_a, market_b],
@@ -121,8 +121,8 @@ def test_crossed_no_a_book_skips_relation() -> None:
 
 def test_crossed_yes_b_book_skips_relation() -> None:
     """A crossed YES_B book (bid >= ask) causes the relation to be skipped."""
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     snap = Snapshot(
         markets=[market_a, market_b],
@@ -149,8 +149,8 @@ def test_dependency_gas_guard() -> None:
     gas=20.01 → 20.00 - 20.01 = -0.01 ≤ 0 → suppress.
     gas=19.99 → 20.00 - 19.99 =  0.01 > 0 → emit.
     """
-    market_a = make_market("0xA", yes="yA", no="nA")
-    market_b = make_market("0xB", yes="yB", no="nB")
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type="crypto_fees_v2")
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type="crypto_fees_v2")
     relation = Relation("0xA", "0xB", "A ⇒ B")
     books = {
         "nA": make_book("nA", asks=[("0.30", "50")]),
@@ -202,3 +202,43 @@ def test_per_leg_fee_rates_bind_to_correct_leg() -> None:
     )
     assert opp.fees == expected_fees
     assert opp.fees != swapped_fees
+
+
+# ---------------------------------------------------------------------------
+# A2-VOID GATE — a held dependency lock emits only when BOTH legs are OBJECTIVE
+# (committee 2026-07-01): a single leg's 50-50 void wipes the thin edge, so mirror
+# the NO-dual and refuse void-prone (non-OBJECTIVE) legs.
+# ---------------------------------------------------------------------------
+
+
+def _gated_snapshot(a_fee_type: str | None, b_fee_type: str | None) -> Snapshot:
+    """A clear violation (cost 0.60 < 1); leg classification alone decides emit vs suppress."""
+    market_a = make_market("0xA", yes="yA", no="nA", fee_type=a_fee_type)
+    market_b = make_market("0xB", yes="yB", no="nB", fee_type=b_fee_type)
+    relation = Relation("0xA", "0xB", "A ⇒ B")
+    return Snapshot(
+        markets=[market_a, market_b],
+        relations=[relation],
+        books={
+            "nA": make_book("nA", asks=[("0.30", "50")]),
+            "yB": make_book("yB", asks=[("0.30", "80")]),
+        },
+    )
+
+
+def test_void_gate_emits_when_both_legs_objective() -> None:
+    # crypto price feed + sports result → OBJECTIVE both sides → the lock is emitted (control).
+    snap = _gated_snapshot("crypto_fees_v2", "sports_fees_v2")
+    assert len(list(DependencyDetector().detect(snap))) == 1
+
+
+def test_void_gate_suppresses_non_objective_consequent() -> None:
+    # B is politics (ELEVATED, void-prone) → suppress despite the clear price violation.
+    snap = _gated_snapshot("crypto_fees_v2", "politics_fees_v2")
+    assert list(DependencyDetector().detect(snap)) == []
+
+
+def test_void_gate_suppresses_non_objective_antecedent() -> None:
+    # A is untyped (fee_type=None → STANDARD) → suppress on the antecedent leg too.
+    snap = _gated_snapshot(None, "crypto_fees_v2")
+    assert list(DependencyDetector().detect(snap)) == []

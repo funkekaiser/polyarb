@@ -10,6 +10,12 @@ When the identity is violated (``price(A) > price(B)``) you can lock a profit by
 
 Relations are declared (``resolution.relations``), never inferred from text. This detector
 uses the *actual* NO_A ask from the book rather than the ``1 - a_yes,A`` approximation.
+
+**Void gate (A2-void, committee 2026-07-01).** A dependency lock is held to resolution and its
+edge is thin (``price(A) - price(B)``), so a single leg's 50-50 void (~$0.50 loss) dwarfs many
+clean wins — the same fragility the NO-dual has. So we mirror the dual's gate: emit only when
+**both** legs resolve on a void-resistant (OBJECTIVE) source. The lock is *guaranteed modulo
+void*; an OBJECTIVE source keeps that residual remote (E2 is the settle-negative backstop).
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from polyarb.detectors.base import (
 from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.pricing.fees import fee_rate_for, taker_fee
 from polyarb.pricing.sizing import is_crossed, top_level_min_depth
+from polyarb.resolution.risk import ResolutionRisk, classify_market
 
 
 def dependency_profit(
@@ -57,6 +64,15 @@ class DependencyDetector:
             if market_a is None or market_b is None:
                 continue
             if not (market_a.is_binary and market_b.is_binary):
+                continue
+
+            # A2-void gate (committee 2026-07-01): the thin, held-to-resolution dependency lock is
+            # wiped out by a single leg's 50-50 void, so — mirroring the NO-dual — emit only when
+            # both legs resolve on a void-resistant (OBJECTIVE) source. See module docstring.
+            if (
+                classify_market(market_a) != ResolutionRisk.OBJECTIVE
+                or classify_market(market_b) != ResolutionRisk.OBJECTIVE
+            ):
                 continue
 
             no_a_book = snap.books.get(market_a.no_token_id)
