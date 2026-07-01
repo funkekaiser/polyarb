@@ -62,3 +62,21 @@ class GammaClient(BaseHTTPClient):
     async def get_market(self, market_id: str | int) -> Market:
         data = await self._get_json(f"/markets/{market_id}", endpoint="/markets")
         return Market.model_validate(data)
+
+    async def resolved_markets(self, condition_ids: list[str]) -> list[Market]:
+        """Fetch CLOSED (resolved) markets for the given condition ids — read-only (E1 settle).
+
+        Filters ``/markets`` by ``closed=true`` + ``condition_ids`` (a resolved market is not
+        ``active``, so the active filter is dropped). NOTE: the ``condition_ids`` filter is not
+        yet live-verified in this repo — see docs/API_NOTES.md; the first live ``polyarb settle``
+        run should confirm resolutions come back. All settlement logic is fully offline-tested
+        against a fake resolver independent of this query.
+        """
+        if not condition_ids:
+            return []
+        return await self.get_markets(
+            closed=True,
+            active=False,
+            limit=max(len(condition_ids), 100),
+            condition_ids=condition_ids,
+        )

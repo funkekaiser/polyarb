@@ -14,11 +14,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Protocol
 
 from polyarb.models import Market, Opportunity
+from polyarb.sinks.store import OpportunityStore
 
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
+
+
+class MarketResolver(Protocol):
+    """Read-only source of resolved markets by condition id (satisfied by ``GammaClient``)."""
+
+    async def resolved_markets(self, condition_ids: list[str]) -> list[Market]: ...
+
+
+@dataclass(frozen=True)
+class SettlementRun:
+    """Summary of one poller pass over the pending ledger."""
+
+    checked: int
+    settled: int  # resolved cleanly (all legs 0/1)
+    void: int  # settled but a leg voided off {0,1}
+    still_pending: int  # at least one leg not yet resolved
 
 
 @dataclass(frozen=True)
@@ -86,4 +104,48 @@ def settle(opp: Opportunity, resolved: dict[str, Decimal]) -> SettlementResult |
         realized_payoff=payoff,
         realized_pnl=pnl,
         detail=detail,
+    )
+
+
+async def poll_settlements(
+    store: OpportunityStore,
+    resolver: MarketResolver,
+    *,
+    batch_limit: int = 500,
+) -> SettlementRun:
+    """Read-only pass: settle any pending ledger event whose legs have all resolved (E1-c).
+
+    Loads pending economic events, fetches the resolutions of their condition ids in one batch
+    (Gamma reads only — never touches a signing client), settles each fully-resolved event, and
+    writes the realized outcome back. Events with an unresolved leg are left pending for a later
+    pass. Safe to call on a slow cadence from the scanner or manually via ``polyarb settle``.
+    """
+    entries = store.pending_events(limit=batch_limit)
+    if not entries:
+        return SettlementRun(checked=0, settled=0, void=0, still_pending=0)
+
+    condition_ids = sorted({cid for entry in entries for cid in entry.opp.condition_ids})
+    markets = await resolver.resolved_markets(condition_ids)
+    resolved = token_resolution_map(markets)
+
+    settled = void = still_pending = 0
+    for entry in entries:
+        result = settle(entry.opp, resolved)
+        if result is None:
+            still_pending += 1
+            continue
+        store.record_resolution(
+            entry.fingerprint,
+            status=result.status,
+            realized_payoff=result.realized_payoff,
+            realized_pnl=result.realized_pnl,
+            detail=result.detail,
+        )
+        if result.status == "void":
+            void += 1
+        else:
+            settled += 1
+
+    return SettlementRun(
+        checked=len(entries), settled=settled, void=void, still_pending=still_pending
     )

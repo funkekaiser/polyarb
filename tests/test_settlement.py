@@ -1,11 +1,13 @@
-"""E1-b — realized-outcome settlement math (pure, offline)."""
+"""E1-b/c — realized-outcome settlement math + read-only poller (offline)."""
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
-from polyarb.engine.settlement import settle, token_resolution_map
+from polyarb.engine.settlement import poll_settlements, settle, token_resolution_map
 from polyarb.models import DetectorKind, Leg, Market, Opportunity
+from polyarb.sinks.store import SqliteStore
 
 ZERO = Decimal(0)
 
@@ -112,3 +114,72 @@ def test_token_resolution_map_skips_open_markets() -> None:
     resolved = token_resolution_map([closed, open_market])
     assert resolved == {"yA": Decimal(1), "nA": Decimal(0)}
     assert "yB" not in resolved
+
+
+# ---------------------------------------------------------------------------
+# E1-c — read-only settlement poller over the ledger
+# ---------------------------------------------------------------------------
+
+
+class _FakeResolver:
+    """Returns the closed markets whose condition_id is asked for (a fake GammaClient)."""
+
+    def __init__(self, markets: list[Market]) -> None:
+        self._markets = markets
+        self.asked: list[str] = []
+
+    async def resolved_markets(self, condition_ids: list[str]) -> list[Market]:
+        self.asked = condition_ids
+        return [m for m in self._markets if m.condition_id in condition_ids]
+
+
+def _resolved_market(condition_id: str, tokens: list[str], prices: list[str]) -> Market:
+    return Market(
+        id=condition_id,
+        condition_id=condition_id,
+        question="Q?",
+        outcomes=["Yes", "No"],
+        clob_token_ids=tokens,
+        outcome_prices=[Decimal(p) for p in prices],
+        closed=True,
+    )
+
+
+def test_poll_settles_a_resolved_event() -> None:
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    opp.condition_ids = ["0xA"]
+    resolver = _FakeResolver([_resolved_market("0xA", ["yA", "nA"], ["1", "0"])])
+    with SqliteStore() as store:
+        store.record(opp)
+        run = asyncio.run(poll_settlements(store, resolver))
+        assert (run.checked, run.settled, run.void, run.still_pending) == (1, 1, 0, 0)
+        assert store.pending_events() == []  # settled → cleared from pending
+
+
+def test_poll_flags_a_void_event() -> None:
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    opp.condition_ids = ["0xA"]
+    resolver = _FakeResolver([_resolved_market("0xA", ["yA", "nA"], ["0.5", "0.5"])])
+    with SqliteStore() as store:
+        store.record(opp)
+        run = asyncio.run(poll_settlements(store, resolver))
+        assert (run.settled, run.void) == (0, 1)
+
+
+def test_poll_leaves_unresolved_events_pending() -> None:
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    opp.condition_ids = ["0xA"]
+    resolver = _FakeResolver([])  # nothing resolved yet
+    with SqliteStore() as store:
+        store.record(opp)
+        run = asyncio.run(poll_settlements(store, resolver))
+        assert (run.checked, run.still_pending) == (1, 1)
+        assert len(store.pending_events()) == 1  # still tracked as pending
+
+
+def test_poll_empty_ledger_is_a_noop() -> None:
+    resolver = _FakeResolver([])
+    with SqliteStore() as store:
+        run = asyncio.run(poll_settlements(store, resolver))
+        assert (run.checked, run.settled, run.void, run.still_pending) == (0, 0, 0, 0)
+        assert resolver.asked == []  # never queried Gamma with an empty ledger

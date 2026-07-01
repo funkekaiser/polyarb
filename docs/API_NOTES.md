@@ -142,6 +142,15 @@ Polymarket documentation explicitly describes a per-order minimum.
   `feeSchedule.rate` → `fee_rate`; some markets omit `clobTokenIds` (not yet tradeable) and
   some token_ids 404 on `/book`.
 
+- **`/markets?closed=true&condition_ids=...` (E1 settle poller — PENDING live verification,
+  2026-07-01):** the read-only `polyarb settle` poller (`GammaClient.resolved_markets`) fetches
+  resolved markets by `condition_ids` to read their settled `outcomePrices`. The `condition_ids`
+  filter param + the `active=false` pairing with `closed=true` are the standard Gamma query shape
+  but are **not yet confirmed against the live API in this repo** — the first live `settle` run
+  should verify resolutions actually come back (all settlement *logic* is offline-tested against a
+  fake resolver, independent of this query). A resolved binary settles `outcomePrices` at `[1,0]`
+  / `[0,1]`; a 50-50 void at `[0.5,0.5]`.
+
 ## WebSocket market channel
 
 - URL: `wss://ws-subscriptions-clob.polymarket.com/ws/market`.
