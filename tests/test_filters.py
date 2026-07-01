@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from polyarb.config import Settings
 from polyarb.engine.filters import DedupeCache, OpportunityFilter, opportunity_key
-from polyarb.models import DetectorKind, Opportunity
+from polyarb.models import DetectorKind, Leg, Opportunity
 from polyarb.resolution.risk import ResolutionRisk
 
 
@@ -19,12 +19,13 @@ def _opp(
     risk: ResolutionRisk = ResolutionRisk.OBJECTIVE,
     conditions: list[str] | None = None,
     annualized: str | None = None,
+    legs: list[Leg] | None = None,
 ) -> Opportunity:
     return Opportunity(
         detector=DetectorKind.COMPLEMENT,
         description="t",
         condition_ids=conditions or ["0x1"],
-        legs=[],
+        legs=legs or [],
         cost=Decimal(cost),
         gross_profit=Decimal("0.10"),
         fees=Decimal(0),
@@ -101,6 +102,45 @@ def test_annualized_gate_disabled_by_default() -> None:
     filt = OpportunityFilter(_settings())
     assert len(filt.apply([_opp(size="1000", annualized="0.015")])) == 1
     assert filt.stats.below_annualized == 0
+
+
+# --- executability gate (rec #2 / D5): per-leg minimum order size ---
+# Tested at a lowered $1 floor — at the $50 floor the min-order gate is a redundant no-op
+# (clearing $50 already needs »5 shares); its job is to keep a LOWERED floor honest.
+
+_LEGS = [
+    Leg(token_id="t1", side="buy", price=Decimal("0.45"), size=Decimal("100")),
+    Leg(token_id="t2", side="buy", price=Decimal("0.45"), size=Decimal("100")),
+]
+_MIN5 = {"t1": Decimal(5), "t2": Decimal(5)}
+
+
+def test_min_order_gate_rejects_sub_minimum_basket() -> None:
+    # decision_size 4 (< 5-share min) at a $1 floor: notional $3.60 clears $1, but the basket
+    # can't be placed → rejected as unexecutable, not surfaced as a phantom edge.
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(1)))
+    opp = _opp(size="1000", conservative="4", cost="0.90", legs=_LEGS)
+    assert filt.apply([opp], _MIN5) == []
+    assert filt.stats.below_min_order == 1
+
+
+def test_min_order_gate_allows_placeable_basket() -> None:
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(1)))
+    opp = _opp(size="1000", conservative="10", cost="0.90", legs=_LEGS)
+    assert len(filt.apply([opp], _MIN5)) == 1
+
+
+def test_min_order_gate_skips_when_minimum_unknown() -> None:
+    # No min-size context (or token absent) → gate can't fire; opp passes on other filters.
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(1)))
+    opp = _opp(size="1000", conservative="4", cost="0.90", legs=_LEGS)
+    assert len(filt.apply([opp], None)) == 1
+
+
+def test_min_order_gate_disabled_by_config() -> None:
+    filt = OpportunityFilter(_settings(min_notional_usdc=Decimal(1), enforce_min_order_size=False))
+    opp = _opp(size="1000", conservative="4", cost="0.90", legs=_LEGS)
+    assert len(filt.apply([opp], _MIN5)) == 1
 
 
 def test_rejects_at_risk_when_configured() -> None:

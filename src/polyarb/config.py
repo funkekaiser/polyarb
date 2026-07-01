@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # (annualized None) and are exempt. Default 0 = DISABLED (no behavior change); the committee's
     # recommended production value is ~0.08-0.10 (8-10%/yr = T-bill + a void/illiquidity spread).
     min_annualized_return: Decimal = Decimal(0)
+    # Executability gate (floor-analysis committee 2026-07-01, rec #2 / backlog D5). Polymarket
+    # enforces a per-order MINIMUM ORDER SIZE — live-verified 2026-07-01 as **5 shares on every
+    # market**. A basket whose per-leg order (the conservative `decision_size`) is below a leg's
+    # minimum is not *placeable*, so a reported edge on it is a phantom (a false positive). Reject
+    # such opps. Default ON: at the $50 floor it's a redundant no-op (clearing $50 already needs
+    # »5 shares), but it's the safety gate that makes a LOWER floor honest (rec #3 shadow run).
+    # Only fires when a leg's market reports min_order_size; set False to disable.
+    enforce_min_order_size: bool = True
     exclude_at_risk_resolution: bool = True
     dedupe_cooldown_seconds: float = 300.0
     # §5 — opt-in probabilistic partial basket (docs/HEDGING.md §5). OFF by default and never on

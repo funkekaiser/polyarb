@@ -315,7 +315,15 @@ class Scanner:
             opp.resolution_risk = resolution_risk_for(opp, by_condition)
 
         filt = OpportunityFilter(self._settings, self._dedupe)
-        kept = rank(filt.apply(opps))
+        # token_id -> per-order minimum share size (D5 executability gate). Both tokens of a market
+        # share its minimum; only populated markets contribute (unpopulated → gate skips that leg).
+        token_min_size = {
+            token_id: market.min_order_size
+            for market in by_condition.values()
+            if market.min_order_size is not None
+            for token_id in market.clob_token_ids
+        }
+        kept = rank(filt.apply(opps, token_min_size))
 
         emitted = 0  # count opps actually PERSISTED, not len(kept) — a store failure shouldn't
         # inflate the metric exactly when the system is degraded (disk full, SQLite locked).

@@ -62,6 +62,7 @@ class FilterStats:
     below_profit: int = 0
     below_notional: int = 0
     below_annualized: int = 0
+    below_min_order: int = 0
     at_risk: int = 0
     deduped: int = 0
     kept: int = 0  # passed all filters (ranked + handed to emit); NOT the store/notify success
@@ -76,7 +77,7 @@ class OpportunityFilter:
         self._dedupe = dedupe or DedupeCache(settings.dedupe_cooldown_seconds)
         self.stats = FilterStats()
 
-    def passes(self, opp: Opportunity) -> bool:
+    def passes(self, opp: Opportunity, token_min_size: dict[str, Decimal] | None = None) -> bool:
         s = self._settings
         self.stats.seen += 1
 
@@ -91,6 +92,16 @@ class OpportunityFilter:
         if notional < s.min_notional_usdc:
             self.stats.below_notional += 1
             return False
+
+        # Executability gate (committee rec #2 / D5): each leg places `decision_size` shares; if
+        # that is below any leg's market minimum order size, the basket can't be placed — a
+        # phantom edge. Only checks legs whose market minimum is known.
+        if s.enforce_min_order_size and token_min_size:
+            for leg in opp.legs:
+                minimum = token_min_size.get(leg.token_id)
+                if minimum is not None and opp.decision_size < minimum:
+                    self.stats.below_min_order += 1
+                    return False
 
         # Annualized-return gate (committee rec #1). A held arb locking capital for months can
         # clear the per-set bps floor yet return less than a savings account annualized. Gate on
@@ -115,5 +126,7 @@ class OpportunityFilter:
         self.stats.kept += 1
         return True
 
-    def apply(self, opps: list[Opportunity]) -> list[Opportunity]:
-        return [opp for opp in opps if self.passes(opp)]
+    def apply(
+        self, opps: list[Opportunity], token_min_size: dict[str, Decimal] | None = None
+    ) -> list[Opportunity]:
+        return [opp for opp in opps if self.passes(opp, token_min_size)]
