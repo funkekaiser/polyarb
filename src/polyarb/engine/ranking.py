@@ -16,8 +16,8 @@ live fraction (live_count / total_count) is a mild quality signal. This key:
     one, because risk and absolute $ sort first;
   - treats None (opps that don't set the field) as fully live (``-1``) so complement/dependency
     opps are not penalized and the existing ranking is preserved for non-NegRisk opps.
-If a stronger or probability-weighted penalty is warranted, DEFER TO COMMITTEE — do not
-implement here; a stronger penalty could violate the absolute-$ dominance invariant.
+A stronger or probability-weighted penalty is deliberately NOT applied here: it could violate the
+absolute-$ dominance invariant above, so revisit the ranking design before strengthening it.
 """
 
 from __future__ import annotations

@@ -1,8 +1,9 @@
 """polyarb CLI entry point.
 
-Phase 0: a stub so the console script and `python -m polyarb.cli` resolve. The real
-commands (`scan --dry-run`, `record`, `backtest`, `replay`) land in later phases.
-The default `scan` path is read-only and must never touch a signing client.
+Commands: ``scan`` (the read-only detection loop, the default), ``record`` (capture live
+fixtures), ``backtest`` / ``ledger`` / ``replay`` (query stored history), ``settle`` (poll
+resolutions for realized P&L), ``healthcheck`` (container liveness), ``version``. The default
+``scan`` path is read-only and must never touch a signing client.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ app = typer.Typer(
 
 @app.callback()
 def main() -> None:
-    """Root callback — keeps subcommand structure even with one command (Phase 0)."""
+    """Root callback — hosts the subcommand group; see the module docstring for the command set."""
 
 
 @app.command()
@@ -26,7 +27,7 @@ def version() -> None:
     """Print the installed polyarb version (alpha)."""
     from polyarb import __version__
 
-    typer.echo(f"polyarb {__version__} (alpha)")
+    typer.echo(f"polyarb {__version__}")
 
 
 @app.command()
