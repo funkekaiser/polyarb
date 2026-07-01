@@ -340,3 +340,26 @@ def test_summarize_shadow_short_window_withholds_rate() -> None:
     s = summarize_shadow_arrivals(entries)
     assert s is not None and s.per_day is None
     assert "need >=" in format_shadow_summary(s)
+
+
+# --- deduped per-opp listing (`ledger` command) ---
+
+
+def test_format_ledger_lines_one_line_per_distinct_event() -> None:
+    from polyarb.engine.backtest import format_ledger_lines
+
+    entries = [
+        _shadow_entry("a", "2026-07-01T00:00:00+00:00", "75.8", "0.977", "10"),
+        _shadow_entry("b", "2026-07-01T00:00:00+00:00", "40.0", "0.90", "5"),
+    ]
+    entries[0] = LedgerEntry(**{**entries[0].__dict__, "detection_count": 342})
+    out = format_ledger_lines(entries)
+    assert len(out.splitlines()) == 2  # 2 distinct events, not 342+5 rows
+    assert "x342" in out  # the re-detection count is surfaced, not repeated lines
+    assert "75.8bps" in out
+
+
+def test_format_ledger_lines_empty() -> None:
+    from polyarb.engine.backtest import format_ledger_lines
+
+    assert "no economic events" in format_ledger_lines([])

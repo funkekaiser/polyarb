@@ -157,6 +157,28 @@ def settle(
 
 
 @app.command()
+def ledger(
+    limit: int = typer.Option(200, help="Max distinct events to list."),
+    shadow: bool = typer.Option(False, help="List shadow observations instead of real events."),
+) -> None:
+    """List DISTINCT economic events (deduped), one line each — NOT the raw re-detections.
+
+    A single opp re-detected thousands of times shows up once, with `xN` = times seen.
+    """
+    from polyarb.config import load_settings
+    from polyarb.engine.backtest import format_ledger_lines
+    from polyarb.sinks.store import SqliteStore
+
+    settings = load_settings()
+    store = SqliteStore(settings.sqlite_path)
+    try:
+        entries = store.shadow_events(limit) if shadow else store.events(limit)
+    finally:
+        store.close()
+    typer.echo(format_ledger_lines(entries))
+
+
+@app.command()
 def replay(
     limit: int = typer.Option(50, help="Most recent stored opportunities to replay."),
 ) -> None:

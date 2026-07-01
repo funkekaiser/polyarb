@@ -314,3 +314,28 @@ def format_shadow_summary(summary: ShadowArrivalSummary | None) -> str:
     else:
         lines.append(f"  arrival rate:    {summary.per_day:.2f} distinct/day")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Deduped per-opp listing — one line per DISTINCT economic event (the `ledger`
+# command), so a single opp re-detected 3000x shows up exactly once.
+# ---------------------------------------------------------------------------
+
+
+def format_ledger_lines(entries: list[LedgerEntry]) -> str:
+    """One line per distinct economic event: detector, edge, notional, horizon, xN-seen, status."""
+    if not entries:
+        return "(no economic events tracked yet)"
+    q1 = Decimal("0.1")
+    q2 = Decimal("0.01")
+    lines: list[str] = []
+    for e in entries:
+        o = e.opp
+        notional = (o.decision_size * o.cost).quantize(q2)
+        days = f"{o.days_to_resolution}d" if o.days_to_resolution is not None else "instant"
+        realized = "" if e.realized_pnl is None else f" pnl=${e.realized_pnl.quantize(q2)}"
+        lines.append(
+            f"[{o.detector}] {o.net_profit_bps.quantize(q1)}bps ${notional} {days} "
+            f"x{e.detection_count} {e.status}{realized} :: {o.description[:64]}"
+        )
+    return "\n".join(lines)
