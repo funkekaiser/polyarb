@@ -182,7 +182,10 @@ def healthcheck() -> None:
             max(2.0 * settings.scan_interval_seconds, 120.0),
         )
     ]
-    if settings.streaming_enabled and settings.ws_heartbeat_path is not None:
+    # Streaming is the default path, so its liveness is required: when enabled, the WS heartbeat
+    # must be configured AND fresh. _check fails loud on an unset path (a misconfiguration — a
+    # frozen cache would otherwise read healthy), matching the docstring.
+    if settings.streaming_enabled:
         parts.append(
             _check(
                 settings.ws_heartbeat_path,

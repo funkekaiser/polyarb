@@ -98,7 +98,10 @@ class Settings(BaseSettings):
     # resync) within this wall-clock window — distinct from max_book_age_s (the book's own
     # last-change time). A safety net atop R1's REST-confirm; bounds cross-leg skew at detect
     # time and stops wasting confirm round-trips on stale-cache phantoms. <=0 disables.
-    ws_freshness_s: float = 30.0
+    # MUST be >= ws_resync_interval_s (+ a resync-drain margin): a quiescent token is restamped
+    # only by the full resync, so a shorter window would make quiet-but-valid books blink out for
+    # part of every cycle (committee finding). Default 90 = 60s resync + 30s margin.
+    ws_freshness_s: float = 90.0
     # R8 stream-aware liveness: when set (and streaming_enabled), the runner atomically writes the
     # epoch-seconds of the last applied WS message OR successful resync here, and `polyarb
     # healthcheck` fails if it goes stale — so a wedged runner (both WS and resync stuck) can't

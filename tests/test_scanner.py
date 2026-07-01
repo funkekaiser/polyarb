@@ -771,8 +771,13 @@ def test_healthcheck_ok_fresh_timestamp(tmp_path) -> None:
     hb_file = tmp_path / "polyarb-heartbeat"
     hb_file.write_text(repr(time.time()))
 
+    # REST-mode healthcheck (streaming off): only the scan heartbeat is required.
     runner = CliRunner()
-    result = runner.invoke(app, ["healthcheck"], env={"HEARTBEAT_PATH": str(hb_file)})
+    result = runner.invoke(
+        app,
+        ["healthcheck"],
+        env={"HEARTBEAT_PATH": str(hb_file), "STREAMING_ENABLED": "false"},
+    )
     assert result.exit_code == 0, f"expected exit 0, got {result.exit_code}: {result.output}"
     assert "ok" in result.output
 
@@ -868,6 +873,26 @@ def test_healthcheck_streaming_fail_ws_frozen(tmp_path) -> None:
         },
     )
     assert result.exit_code != 0, "frozen WS cache must fail the stream-aware healthcheck"
+
+
+def test_healthcheck_streaming_fail_loud_without_ws_path(tmp_path) -> None:
+    """R8/committee: streaming enabled but WS_HEARTBEAT_PATH unset is a misconfiguration — the
+    healthcheck must fail loudly (a frozen cache would else read healthy), not silently skip it."""
+    import time
+
+    from typer.testing import CliRunner
+
+    from polyarb.cli import app
+
+    hb = tmp_path / "scan-hb"
+    hb.write_text(repr(time.time()))  # scan loop fresh, but no WS heartbeat configured
+
+    result = CliRunner().invoke(
+        app,
+        ["healthcheck"],
+        env={"HEARTBEAT_PATH": str(hb), "STREAMING_ENABLED": "true"},
+    )
+    assert result.exit_code != 0, "streaming without WS_HEARTBEAT_PATH must fail the healthcheck"
 
 
 def test_scan_once_survives_gas_oracle_failure_end_to_end() -> None:

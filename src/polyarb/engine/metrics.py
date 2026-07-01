@@ -31,9 +31,16 @@ LAST_PASS = Gauge(
 # These make the now-default streaming path observable: a connected-but-silent feed, reconnect
 # churn, and resync health are otherwise invisible (the scan loop keeps pulsing off the cache).
 
+# WS_LAST_MESSAGE is TRUE-WS-message-only (a live delta), NOT resync — so a monitor can alert on a
+# silently-dead feed even while the 60s REST resync keeps the container's liveness heartbeat green
+# (committee finding). WS_LAST_RESYNC is the resync counterpart; the heartbeat file uses max(both).
 WS_LAST_MESSAGE = Gauge(
     "polyarb_ws_last_message_timestamp_seconds",
-    "Unix time the streaming runner last applied a WS message or successful resync",
+    "Unix time the streaming runner last applied a live WS delta (excludes REST resync)",
+)
+WS_LAST_RESYNC = Gauge(
+    "polyarb_ws_last_resync_timestamp_seconds",
+    "Unix time the streaming runner last completed a successful REST resync fetch",
 )
 WS_RECONNECTS = Counter("polyarb_ws_reconnects_total", "WS (re)connection attempts")
 WS_STALLS = Counter(

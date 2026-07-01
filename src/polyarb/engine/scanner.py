@@ -381,15 +381,17 @@ class Scanner:
         now = datetime.now(UTC)
         needed = self._needed_tokens(events, markets)
         # Keep the runner subscribed/resynced to the current discovery set (R6, dynamic sub).
-        # Read R2-fresh books from the runner (drops feed-silent tokens); fall back to the raw
-        # cache when no runner is attached (the direct-call unit-test path).
+        # Read R2-fresh books scoped to this pass from the runner (drops feed-silent tokens and
+        # reports how many); fall back to the raw cache when no runner is attached (the direct-call
+        # unit-test path).
+        stale_dropped = 0
         if self._streaming is not None:
             self._streaming.set_tokens(needed)
-            cached = self._streaming.fresh_books(self._settings.ws_freshness_s)
+            books, stale_dropped = self._streaming.scoped_fresh_books(
+                needed, self._settings.ws_freshness_s
+            )
         else:
-            cached = self._cache.books()
-        # Scope to the tokens this pass cares about.
-        books = {t: b for t, b in cached.items() if t in needed}
+            books = {t: b for t, b in self._cache.books().items() if t in needed}
         gas_fixed, gas_per_leg = await self._resolve_gas()
         candidates = self._detect(events, markets, by_condition, books, gas_fixed, gas_per_leg, now)
 
@@ -411,10 +413,11 @@ class Scanner:
         log.info(
             "scan_streamed",
             cached_books=len(books),
+            stale_dropped=stale_dropped,
             candidates=len(candidates),
             confirmed=len(confirmed),
         )
-        return await self._emit(confirmed, by_condition, stale_dropped=0)
+        return await self._emit(confirmed, by_condition, stale_dropped=stale_dropped)
 
     async def run(self, *, passes: int = 0, max_seconds: float | None = None) -> None:
         """Loop ``scan_once`` on the configured interval until done or signalled.

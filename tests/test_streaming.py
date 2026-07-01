@@ -646,3 +646,50 @@ def test_publish_liveness_writes_ws_heartbeat(tmp_path: Any) -> None:
     sb._publish_liveness()
     assert hb.exists()
     assert abs(float(hb.read_text().strip()) - time.time()) < 5.0
+
+
+def test_publish_liveness_pulses_when_no_tokens_tracked(tmp_path: Any) -> None:
+    """With an empty token set (e.g. startup discovery outage), the WS heartbeat still pulses —
+    an idle runner is healthy, not frozen, so a Gamma outage degrades instead of crash-looping."""
+    import time
+
+    hb = tmp_path / "ws-heartbeat"
+    sb = StreamingBooks(
+        [],  # nothing to track
+        clob=FakeClob({}),  # type: ignore[arg-type]
+        settings=_settings(ws_heartbeat_path=hb),
+    )
+    sb._publish_liveness()
+    assert hb.exists()
+    assert abs(float(hb.read_text().strip()) - time.time()) < 5.0
+
+
+def test_resync_skips_token_evicted_mid_flight() -> None:
+    """A token evicted by set_tokens() while its resync fetch is in flight is NOT re-seeded
+    (no zombie cache entry) — the confirmed bug-hunt finding."""
+
+    async def go() -> dict[str, Any]:
+        cache = OrderBookCache()
+        release = asyncio.Event()
+
+        class BlockingClob:
+            async def get_order_book(self, token_id: str) -> OrderBook:
+                await release.wait()  # hold the fetch open so set_tokens can evict mid-flight
+                return _book(token_id, bids=[("0.5", "100")])
+
+        sb = StreamingBooks(
+            ["gone"],
+            clob=BlockingClob(),  # type: ignore[arg-type]
+            settings=_settings(),
+            cache=cache,
+        )
+        fetch = asyncio.create_task(sb._resync_tokens(["gone"]))
+        await asyncio.sleep(0)  # let the fetch start and block on release
+        sb.set_tokens([])  # evict 'gone' while its fetch is in flight
+        release.set()
+        await fetch
+        return {"cached": set(cache.books()), "tracked": set(sb._tracked)}
+
+    out = asyncio.run(go())
+    assert out["cached"] == set()  # the evicted token was NOT resurrected by the landing fetch
+    assert out["tracked"] == set()

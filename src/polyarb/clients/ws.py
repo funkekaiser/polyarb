@@ -67,7 +67,10 @@ class MarketWebSocket:
                         await conn.send(json.dumps(op))
                         ctrl_task = asyncio.ensure_future(control.get())
                     if recv_task in done:
-                        raw = recv_task.result()  # raises ConnectionClosed when the socket closes
+                        try:
+                            raw = recv_task.result()
+                        except websockets.exceptions.ConnectionClosedOK:
+                            return  # clean server-initiated close → end iteration normally
                         recv_task = asyncio.ensure_future(conn.recv())
                         yield json.loads(raw)
             finally:
