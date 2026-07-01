@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from polyarb.models import DetectorKind, Opportunity
+from polyarb.sinks.store import LedgerEntry
 
 _ZERO = Decimal(0)
 _TWO = Decimal(2)
@@ -175,4 +176,82 @@ def format_summary(summary: BacktestSummary) -> str:
     else:
         lines.append("  avg days to resolution: n/a")
 
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# E1-d — realized-outcome summary over the ledger (C4 truth, not the would-be
+# upper bound). Reads settled `economic_events`; a settled event with
+# realized_pnl < 0 is a "guaranteed" arb that actually went bad (E2 alerts on it).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LedgerSummary:
+    """Realized outcomes across distinct economic events (deduped)."""
+
+    total_events: int
+    pending: int
+    settled: int  # resolved + void — events with a realized P&L
+    void: int  # settled where a leg voided off {0,1}
+    realized_pnl: Decimal  # Σ realized_pnl over settled events (the real number)
+    wins: int  # settled with realized_pnl > 0
+    losses: int  # settled with realized_pnl < 0
+    worst_loss: Decimal  # most-negative realized_pnl (0 if no losses)
+
+
+def summarize_ledger(entries: list[LedgerEntry]) -> LedgerSummary:
+    """Aggregate realized outcomes. A well-defined zero summary for an empty ledger."""
+    pending = settled = void = wins = losses = 0
+    realized_pnl = _ZERO
+    worst_loss = _ZERO
+    for entry in entries:
+        if entry.status == "pending" or entry.realized_pnl is None:
+            pending += 1
+            continue
+        settled += 1
+        if entry.status == "void":
+            void += 1
+        pnl = entry.realized_pnl
+        realized_pnl += pnl
+        if pnl > _ZERO:
+            wins += 1
+        elif pnl < _ZERO:
+            losses += 1
+            worst_loss = min(worst_loss, pnl)
+    return LedgerSummary(
+        total_events=len(entries),
+        pending=pending,
+        settled=settled,
+        void=void,
+        realized_pnl=realized_pnl,
+        wins=wins,
+        losses=losses,
+        worst_loss=worst_loss,
+    )
+
+
+def format_ledger_summary(summary: LedgerSummary) -> str:
+    """Render the realized-outcome summary. Empty ledger → a single clear line."""
+    if summary.total_events == 0:
+        return "Realized ledger — no economic events tracked yet."
+
+    q2 = Decimal("0.01")
+    lines = [
+        f"Realized ledger — {summary.total_events} distinct economic "
+        f"event{'' if summary.total_events == 1 else 's'}",
+        "",
+        f"  pending (unresolved): {summary.pending}",
+        f"  settled:              {summary.settled}  "
+        f"(wins {summary.wins}, losses {summary.losses}, void {summary.void})",
+    ]
+    if summary.settled:
+        win_rate = Decimal(summary.wins) / Decimal(summary.settled) * Decimal(100)
+        lines.append(f"  realized P&L:         ${summary.realized_pnl.quantize(q2)}")
+        lines.append(f"  win rate:             {win_rate.quantize(Decimal('0.1'))}%")
+        if summary.losses:
+            lines.append(
+                f"  worst realized loss:  ${summary.worst_loss.quantize(q2)}  "
+                "(a 'guaranteed' arb that settled negative — see E2)"
+            )
     return "\n".join(lines)

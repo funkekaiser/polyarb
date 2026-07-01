@@ -6,8 +6,14 @@ from decimal import Decimal
 
 import pytest
 
-from polyarb.engine.backtest import format_summary, summarize
+from polyarb.engine.backtest import (
+    format_ledger_summary,
+    format_summary,
+    summarize,
+    summarize_ledger,
+)
 from polyarb.models import DetectorKind, Opportunity
+from polyarb.sinks.store import LedgerEntry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -240,3 +246,51 @@ def test_format_summary_contains_detector_name() -> None:
     opps = [_opp(detector=DetectorKind.NEGRISK_BASKET, net_profit_bps="300")]
     result = format_summary(summarize(opps))
     assert "negrisk_basket" in result
+
+
+# ---------------------------------------------------------------------------
+# E1-d — realized-outcome ledger summary
+# ---------------------------------------------------------------------------
+
+
+def _entry(status: str, realized_pnl: str | None) -> LedgerEntry:
+    return LedgerEntry(
+        fingerprint=f"fp{status}{realized_pnl}",
+        opp=_opp(net_profit_bps="30"),
+        status=status,
+        detection_count=1,
+        first_detected_at="2026-07-01T00:00:00+00:00",
+        last_detected_at="2026-07-01T00:00:00+00:00",
+        realized_pnl=None if realized_pnl is None else Decimal(realized_pnl),
+    )
+
+
+def test_summarize_ledger_empty() -> None:
+    s = summarize_ledger([])
+    assert s.total_events == 0 and s.settled == 0 and s.realized_pnl == Decimal(0)
+    assert "no economic events" in format_ledger_summary(s)
+
+
+def test_summarize_ledger_mixes_pending_win_loss_void() -> None:
+    entries = [
+        _entry("pending", None),
+        _entry("resolved", "10"),  # win
+        _entry("resolved", "-5"),  # loss
+        _entry("void", "-3"),  # loss, and a void
+    ]
+    s = summarize_ledger(entries)
+    assert s.total_events == 4
+    assert s.pending == 1
+    assert s.settled == 3
+    assert s.void == 1
+    assert s.wins == 1
+    assert s.losses == 2
+    assert s.realized_pnl == Decimal("2")  # 10 - 5 - 3
+    assert s.worst_loss == Decimal("-5")
+
+
+def test_format_ledger_flags_negative_settlement() -> None:
+    s = summarize_ledger([_entry("void", "-5")])
+    out = format_ledger_summary(s)
+    assert "worst realized loss" in out
+    assert "settled negative" in out  # the E2 hook is called out for the user

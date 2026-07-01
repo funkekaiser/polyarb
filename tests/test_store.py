@@ -139,3 +139,22 @@ def test_record_resolution_settles_and_removes_from_pending() -> None:
         )
         assert store.pending_events() == []  # settled → no longer pending
         assert store.distinct_events() == 1  # still tracked, just resolved
+
+
+def test_events_reader_round_trips_realized_pnl() -> None:
+    opp = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
+    fp = economic_fingerprint(opp)
+    with SqliteStore() as store:
+        store.record(opp)
+        store.record_resolution(
+            fp,
+            status="void",
+            realized_payoff=Decimal("50"),
+            realized_pnl=Decimal("-5"),
+            detail={"0xA": "0.5"},
+        )
+        events = store.events()
+    assert len(events) == 1
+    assert events[0].status == "void"
+    assert events[0].realized_pnl == Decimal("-5")  # REAL column → Decimal, no float drift
+    assert events[0].realized_payoff == Decimal("50")

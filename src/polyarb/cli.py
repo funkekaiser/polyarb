@@ -97,18 +97,26 @@ def scan(
 def backtest(
     limit: int = typer.Option(10000, help="Max stored opportunities to analyze."),
 ) -> None:
-    """Summarize the stored opportunity history (counts, bps stats, would-be P&L)."""
+    """Summarize the stored opportunity history: would-be stats AND realized ledger P&L."""
     from polyarb.config import load_settings
-    from polyarb.engine.backtest import format_summary, summarize
+    from polyarb.engine.backtest import (
+        format_ledger_summary,
+        format_summary,
+        summarize,
+        summarize_ledger,
+    )
     from polyarb.sinks.store import SqliteStore
 
     settings = load_settings()
     store = SqliteStore(settings.sqlite_path)
     try:
         opps = store.recent(limit)
+        events = store.events()
     finally:
         store.close()
     typer.echo(format_summary(summarize(opps)))
+    typer.echo("")
+    typer.echo(format_ledger_summary(summarize_ledger(events)))
 
 
 @app.command()

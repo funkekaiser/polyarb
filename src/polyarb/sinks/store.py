@@ -48,6 +48,8 @@ class LedgerEntry:
     detection_count: int
     first_detected_at: str
     last_detected_at: str
+    realized_payoff: Decimal | None = None  # None until settled
+    realized_pnl: Decimal | None = None  # None until settled
 
 
 @runtime_checkable
@@ -72,6 +74,10 @@ class OpportunityStore(Protocol):
 
     def pending_events(self, limit: int = 500) -> list[LedgerEntry]:
         """Economic events awaiting resolution (status='pending'), oldest first."""
+        ...
+
+    def events(self, limit: int = 10000) -> list[LedgerEntry]:
+        """All economic events, newest first, including realized outcomes."""
         ...
 
     def record_resolution(
@@ -150,11 +156,23 @@ SET status = ?, resolved_at = ?, realized_payoff = ?, realized_pnl = ?, resoluti
 WHERE fingerprint = ?
 """
 
-_PENDING_EVENTS = """
-SELECT fingerprint, payload, status, detection_count, first_detected_at, last_detected_at
+_EVENT_COLS = (
+    "fingerprint, payload, status, detection_count, first_detected_at, "
+    "last_detected_at, realized_payoff, realized_pnl"
+)
+
+_PENDING_EVENTS = f"""
+SELECT {_EVENT_COLS}
 FROM economic_events
 WHERE status = 'pending'
 ORDER BY first_detected_at ASC
+LIMIT ?
+"""
+
+_ALL_EVENTS = f"""
+SELECT {_EVENT_COLS}
+FROM economic_events
+ORDER BY first_detected_at DESC
 LIMIT ?
 """
 
@@ -221,20 +239,28 @@ class SqliteStore:
         row = self._conn.execute(_COUNT_EVENTS).fetchone()
         return int(row[0])
 
+    @staticmethod
+    def _row_to_entry(row: tuple[object, ...]) -> LedgerEntry:
+        return LedgerEntry(
+            fingerprint=str(row[0]),
+            opp=Opportunity.model_validate_json(str(row[1])),
+            status=str(row[2]),
+            detection_count=int(str(row[3])),
+            first_detected_at=str(row[4]),
+            last_detected_at=str(row[5]),
+            realized_payoff=None if row[6] is None else Decimal(str(row[6])),
+            realized_pnl=None if row[7] is None else Decimal(str(row[7])),
+        )
+
     def pending_events(self, limit: int = 500) -> list[LedgerEntry]:
         """Economic events still awaiting resolution, oldest first."""
         rows = self._conn.execute(_PENDING_EVENTS, (limit,)).fetchall()
-        return [
-            LedgerEntry(
-                fingerprint=row[0],
-                opp=Opportunity.model_validate_json(row[1]),
-                status=row[2],
-                detection_count=int(row[3]),
-                first_detected_at=row[4],
-                last_detected_at=row[5],
-            )
-            for row in rows
-        ]
+        return [self._row_to_entry(row) for row in rows]
+
+    def events(self, limit: int = 10000) -> list[LedgerEntry]:
+        """All economic events, newest first, including realized outcomes."""
+        rows = self._conn.execute(_ALL_EVENTS, (limit,)).fetchall()
+        return [self._row_to_entry(row) for row in rows]
 
     def record_resolution(
         self,
