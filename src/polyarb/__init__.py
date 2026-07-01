@@ -9,4 +9,4 @@ See SPEC.md for the math and the phased plan; docs/API_NOTES.md for verified API
 # build `v<version>`. 0.5.0a2: streaming scan path wired end-to-end (trigger + REST-confirm,
 # R1/R7/R6-partial); remaining phase-3 hardening (R2 freshness, R5 watchdog, R6 full resub,
 # R8 metrics) + the Docker streaming default + execution (phase 5) pending.
-__version__ = "0.5.0a7"
+__version__ = "0.5.0a8"

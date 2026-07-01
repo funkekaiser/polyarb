@@ -142,14 +142,18 @@ Polymarket documentation explicitly describes a per-order minimum.
   `feeSchedule.rate` → `fee_rate`; some markets omit `clobTokenIds` (not yet tradeable) and
   some token_ids 404 on `/book`.
 
-- **`/markets?closed=true&condition_ids=...` (E1 settle poller — PENDING live verification,
-  2026-07-01):** the read-only `polyarb settle` poller (`GammaClient.resolved_markets`) fetches
-  resolved markets by `condition_ids` to read their settled `outcomePrices`. The `condition_ids`
-  filter param + the `active=false` pairing with `closed=true` are the standard Gamma query shape
-  but are **not yet confirmed against the live API in this repo** — the first live `settle` run
-  should verify resolutions actually come back (all settlement *logic* is offline-tested against a
-  fake resolver, independent of this query). A resolved binary settles `outcomePrices` at `[1,0]`
-  / `[0,1]`; a 50-50 void at `[0.5,0.5]`.
+- **`/markets?closed=true&condition_ids=...` (E1 settle poller — VERIFIED LIVE 2026-07-01):** the
+  read-only `polyarb settle` poller (`GammaClient.resolved_markets`) fetches resolved markets by
+  `condition_ids`. Confirmed: the `condition_ids` filter + `active=false`/`closed=true` pairing
+  works — asked for N condition_ids, got exactly those N back as `closed=true`.
+- **Resolved `outcomePrices` are NOT exact 0/1 (VERIFIED LIVE 2026-07-01 — corrected an E1 bug):**
+  a resolved binary's `outcomePrices` is the last-mid at close, converging *near* the payout but
+  not to it — winners come back **~0.9999** (seen down to ~0.9664), losers **~1e-6**; a genuine
+  50-50 void sits near **0.5**. So settlement must **round to the nearest payout {0, 0.5, 1}**, not
+  test exact equality (the original `settle` flagged every real resolution as a "void"). `settle`
+  now rounds with a middle void band [0.25, 0.75]. Limitation: a legitimately-resolved market whose
+  last-mid landed in that band is conservatively treated as a void (triggers an E2 review alert,
+  never a silently-wrong P&L). A rare `[0,0]`/malformed payload rounds both legs to 0.
 
 ## WebSocket market channel
 

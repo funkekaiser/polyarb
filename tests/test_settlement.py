@@ -83,6 +83,33 @@ def test_sell_leg_pnl_sign() -> None:
     assert result.realized_pnl == Decimal("60")
 
 
+def test_epsilon_off_resolution_is_not_a_void() -> None:
+    # LIVE-VERIFIED payload shape: winners settle ~0.9999, losers ~1e-6 (not exact 1/0).
+    # These must round to a clean win/loss, NOT be misflagged as a void.
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    result = settle(opp, {"yA": Decimal("0.9999989"), "nA": Decimal("0.00000105")})
+    assert result is not None
+    assert result.status == "resolved"  # NOT "void"
+    assert result.realized_pnl == Decimal("10")  # settled on payouts 1/0, not the raw prices
+
+
+def test_less_extreme_winner_still_rounds_to_one() -> None:
+    # e.g. "Trump impeached again" resolved YES with a last-mid ~0.9664 — still a clean win.
+    opp = _opp([_leg("yA", "0.45")])
+    result = settle(opp, {"yA": Decimal("0.9664")})
+    assert result is not None
+    assert result.status == "resolved"
+    assert result.realized_pnl == Decimal("55")  # 100*(1 - 0.45)
+
+
+def test_midband_price_is_treated_as_void() -> None:
+    # A price with no clear winner (mid-band) is the genuine void signal.
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    result = settle(opp, {"yA": Decimal("0.55"), "nA": Decimal("0.45")})
+    assert result is not None
+    assert result.status == "void"
+
+
 def test_pending_when_a_leg_is_unresolved() -> None:
     opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
     assert settle(opp, {"yA": Decimal(1)}) is None  # nA missing → still pending

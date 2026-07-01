@@ -22,6 +22,22 @@ from polyarb.sinks.store import OpportunityStore
 
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
+_HALF = Decimal("0.5")
+# Void band. Gamma outcome_prices at resolution converge to ~1 / ~0 but are NOT exact
+# (live-verified 2026-07-01: winners ~0.9999, losers ~1e-6; a 50-50 void sits near 0.5), so we
+# round to the nearest on-chain payout {0, 0.5, 1}. Prices in the middle band have no clear
+# winner → treated as a void (see docs/API_NOTES.md).
+_VOID_LO = Decimal("0.25")
+_VOID_HI = Decimal("0.75")
+
+
+def _settled_payout(price: Decimal) -> tuple[Decimal, bool]:
+    """Map a resolved outcome price to its payout {0, 0.5, 1} and a void flag."""
+    if price >= _VOID_HI:
+        return _ONE, False
+    if price <= _VOID_LO:
+        return _ZERO, False
+    return _HALF, True
 
 
 class MarketResolver(Protocol):
@@ -91,14 +107,16 @@ def settle(opp: Opportunity, resolved: dict[str, Decimal]) -> SettlementResult |
     detail: dict[str, object] = {}
     for leg in opp.legs:
         resolved_price = resolved[leg.token_id]
+        payout, is_void = _settled_payout(resolved_price)
+        # Record the raw price for the audit trail, but settle on the rounded on-chain payout.
         detail[leg.token_id] = str(resolved_price)
-        if resolved_price not in (_ZERO, _ONE):
-            voided = True  # 50-50 void or anomalous partial settlement
+        if is_void:
+            voided = True  # near-0.5 → no clear winner → 50-50 void
         if leg.side == "buy":
-            payoff += resolved_price * leg.size
-            pnl += leg.size * (resolved_price - leg.price)
+            payoff += payout * leg.size
+            pnl += leg.size * (payout - leg.price)
         else:  # sell / short
-            pnl += leg.size * (leg.price - resolved_price)
+            pnl += leg.size * (leg.price - payout)
     pnl -= opp.gas
 
     return SettlementResult(
