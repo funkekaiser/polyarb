@@ -22,8 +22,11 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | C3 | **Rank by absolute net $** | ranking sorts on `total_net_profit` (`size·net − gas`), not bps — real money rises, thin/low-volume artifacts sink (winner's curse). Risk tier primary, then $, then annualized. Subsumes C5. |
 | C1 | **AT_RISK on active UMA dispute** | `umaResolutionStatuses` now parsed; an active *dispute* → AT_RISK → dropped by the default `exclude_at_risk` filter. Real safety gate for held arbs; instant complement exempt. (Not a probability.) |
 | D3 | **Max-leg horizon** | held arbs annualize on `max(leg days)` over their own `condition_ids`, centralized in `make_opportunity` (capital locks until the latest leg resolves). |
-| B2′ | **Leg-scaled gas (mechanism)** | `Snapshot.gas_for(n) = gas + gas_per_leg·n`; each detector charges for its own leg count. Conservative ceiling defaults (0.02/0.05 USDC). *Real Polygon numbers → desk.* |
-| B2′-dyn | **Live gas oracle** | `GasClient` (Polygon Gas Station + CoinGecko POL/USD → USDC, TTL-cached, keyless) wired into the scanner behind `use_dynamic_gas` (OFF by default). Any oracle failure (incl. zero/negative values) → `GasUnavailable` → silent fallback to static config; never aborts a pass. Default path constructs no client and makes no network call. |
+| B2′ | **Leg-scaled gas (mechanism)** | `Snapshot.gas_for(n) = gas + gas_per_leg·n`; each detector charges for its own leg count. |
+| B2′-num | **Gas default → 0 (relayer reality)** | DECIDED 2026-07-01 (3-lens committee unanimous). Relayer (proxy/Safe) makes true user gas ≈$0; the old 0.02/0.05 ceiling over-charged raw Polygon gas and suppressed real small multi-leg edges (~104 bps on a 10-leg $50 basket). Defaults now 0; the ceiling + `use_dynamic_gas` oracle stay one flag away as raw-EOA / Phase-5 insurance. |
+| B2′-dyn | **Live gas oracle** | `GasClient` (Polygon Gas Station + CoinGecko POL/USD → USDC, TTL-cached, keyless) wired into the scanner behind `use_dynamic_gas` (OFF by default). Any oracle failure (incl. zero/negative values) → `GasUnavailable` → silent fallback to static config; never aborts a pass. Default path constructs no client and makes no network call. **Committee: keep OFF** — as source-of-truth it prices gas the relayer user never pays and can under-charge → false positive. |
+| A2-void | **Dependency void-gate + held relabel** | DECIDED 2026-07-01 (3-lens committee). A thin, held-to-resolution dependency lock is wiped by one leg's 50-50 void, so — mirroring the NO-dual — the detector now emits only when **both** legs resolve on an OBJECTIVE source (`classify_market == OBJECTIVE`). Held arbs relabeled "guaranteed modulo void"; complement stays truly void-immune. **No denylist** (not constructible read-only; guessing categories forbidden). Void is unhedgeable on-market → structural mitigation is preferring `realizes="instant"` arbs. |
+| D2-residual | **Reversed closed-leg reads** | SHIPPED (`cf2a532`). `live_partition` resolved-price check + leg labels route through `market.yes_index`; no `[0]` index assumptions remain in detectors. Regression: `test_reversed_closed_eliminated_drops_correctly`. |
 | C1-atom | **Conservative size (surface)** | `Opportunity.conservative_size` = min best-level depth across legs (`top_level_min_depth`), the pessimistic companion to the optimistic full-walk `executable_size`. Diagnostic only. *Whether ranking/filtering should use it → desk.* |
 | A2 | **Void — partial** | closed-leg (post-) void handled by `live_partition`; `customLiveness>default→ELEVATED` (weak). **Core pre-resolution void still OPEN** → see A2-void. |
 | A3-q | **Corrupt-book gate (partial)** | `is_corrupt_book` (`pricing/book_quality.py`) flags the #180 degenerate `bid≤0.01 ∧ ask≥0.99` extreme spread and is gated alongside `is_crossed` in complement + NegRisk YES/dual detectors. Stateless; only ever a false-NEGATIVE (skip), never a fabricated arb. **Hash-revert half still open** (needs cross-pass state + `OrderBook.hash`) → see A3-quiescence. |
@@ -49,10 +52,10 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 Each is implemented to a safe/conservative default; full context lives in the tier tables (one
 home per item — no duplicate prose). Awaiting only a judgment call:
 
-- **D1** — fingerprint-gate policy for hand-declared relations (hard gate / honor-system / attestation). → *Tier D*
+- **D1** — fingerprint-gate policy for hand-declared relations (hard gate / honor-system / attestation). Leaning **attestation**; deferred into the dependency-relation workflow (which subsumes it). → *Tier D*
 - ~~**C1-atom-use**~~ — **DECIDED 2026-07-01 (committee 2-1 + desk): filter+rank on the conservative `decision_size`.** Shipped.
-- **B2′-num** — accept the live gas oracle as source of truth, or measure + pin static gas numbers? → *Tier D*
-- **A2-void** — accept the pre-resolution void residual, or invest in a curated void-prone denylist? → *Tier A (A2-void)*
+- ~~**B2′-num**~~ — **DECIDED 2026-07-01 (3-lens committee unanimous + desk): gas default → 0 (relayer reality).** Oracle stays shipped-but-OFF and the conservative ceiling is one config flag away, as insurance for a future raw-EOA / Phase-5 path. Shipped.
+- ~~**A2-void**~~ — **DECIDED 2026-07-01 (3-lens committee + desk): no denylist** (not constructible read-only) **; extend the OBJECTIVE-source gate to the dependency detector; relabel held arbs "guaranteed modulo void".** Void is unhedgeable on-market — the structural "hedge" is preferring `realizes="instant"` arbs. Void-rate measurement + any haircut deferred to E1/E2. Dependency gate shipped.
 
 ## Decided / closed (no action)
 
@@ -89,8 +92,8 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
-| A2-void | B,D | HIGH | Pre-resolution void/50-50 for **live** legs — no reliable predictive signal in available data (`customLiveness` is window length, not void prob). | Curated void-prone source/category denylist (needs a live-API survey) or a payoff-haircut for held arbs; else accept as a documented residual gated by C1. |
-| A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors); **hash-revert SHIPPED for the streaming cache** (`OrderBook.hash` + per-token deque in `bookcache.py`). Residual: the **REST scan path** has no cross-pass hash tracking, so a reverted REST snapshot there is still uncaught. | Carry a per-token last-hash map into the REST `Scanner` loop (small) — or rely on streaming (phase 3) where it's already covered. |
+| A2-void | — | — | **DECIDED 2026-07-01 → Shipped table (A2-void row).** Dependency void-gate shipped; no denylist; measurement/haircut deferred to E1/E2. Residual pre-resolution void on held basket arbs is an accepted, documented residual (E2 is the settle-negative backstop). | — |
+| A3-quiescence | B,D | LOW (residual) | **Extreme-spread half SHIPPED** (`is_corrupt_book`, gated in all 3 buy/sell detectors); **hash-revert SHIPPED for the streaming cache** (`OrderBook.hash` + per-token deque in `bookcache.py`). Residual: the pure-REST fallback path has no cross-pass hash tracking. | **ACCEPTED as residual under WS-first (2026-07-01):** streaming is the default and its cache already carries hash-revert; the uncovered path runs only when streaming is explicitly disabled. Revisit only if the REST fallback becomes load-bearing again. |
 | A1-stale | B | MED | A *stale-closed* leg (Gamma says closed but still trading) has no book in the snapshot to reveal the staleness; A1 trusts `outcome_prices`. | Fetch a closed leg's book when its resolution is borderline; a live two-sided book on a "closed" market ⇒ stale metadata ⇒ skip. |
 
 ## Open — Tier C: ranking / risk layer (revised 2026-06-30)
@@ -108,9 +111,7 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 
 | # | Str | Sev | Issue | Fix direction |
 |---|-----|-----|-------|---------------|
-| D1 | D | MED | Hand-declared relations **bypass the §6 fingerprint gate** (RELATIONS.md fixed; code not). Wrong-direction relation → full-loss "lock". | Enforce fingerprint match in `add_relation`. |
-| D2-residual | B,C | LOW | **Core SHIPPED** (`Market.yes_index`; buy/sell legs use the right tokens). Residual: `live_partition`'s closed-leg resolved-price check (`negrisk_basket.py:95`, `outcome_prices[0]`) and cosmetic leg labels (`outcomes[0]` in negrisk/partial detectors) still assume index 0 → a reversed *and closed* constituent could misfire the elimination gate. | Route those reads through `market.yes_index`; add a reversed-closed-leg regression test. Small, but touches detector files. |
-| B2′-num | ✶ | MED (decision) | Gas mechanism shipped with a conservative static ceiling (0.02/0.05 USDC) **and** an opt-in live oracle (B2′-dyn). Real measured Polygon/USDC numbers (merge/redeem + taker fills) would let us tighten the static knobs or trust the oracle. | **DESK** — Jonathan/ops: accept the live oracle, or measure once and pin `gas_estimate`/`gas_per_leg_estimate`. |
+| D1 | D | MED | Hand-declared relations **bypass the §6 fingerprint gate** (RELATIONS.md fixed; code not). Wrong-direction relation → full-loss "lock". | Leaning **attestation** (`add_relation` requires an explicit fingerprint-verified affirmation). Deferred into the dependency-relation workflow, which subsumes it. |
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded exposure; per-leg `min_order_size`/tick not enforced; no deterministic final tiebreak. | Address alongside C-layer / sizing. |
 | C-defer | C | LOW | Complement deferrals: greedy-walk vs threshold coupling; worst-fill `Leg.price` (Phase-5 executor); NegRisk merge routing + higher gas (Phase-5); 1e-28 VWAP rounding / min-size. | Mostly Phase-5 / negligible; revisit then. |
 
@@ -231,8 +232,9 @@ Remaining streaming polish is non-blocking (Tier D-ws). Work the items below in 
    "guaranteed" really pay?). Its own workstream.
 
 **Deferred:** small-edge tier (needs #3+#4+execution), **C2** (probabilistic ranking), **§5**
-(opt-in/off), **E4** (no probabilistic bets yet). **Desk decisions still open:** D1 (handled in #2),
-B2′-num / gas-wallet path, A2-void.
+(opt-in/off), **E4** (no probabilistic bets yet). **Desk decisions:** B2′-num and A2-void
+**DECIDED 2026-07-01** (committee → Shipped table); **D1** deferred into the dependency-relation
+workflow (#2), leaning attestation.
 
 ### Dependency-workflow design seed (from subsystem mapping, 2026-06-30)
 
