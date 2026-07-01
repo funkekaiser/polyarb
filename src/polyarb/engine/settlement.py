@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
-from polyarb.models import Market, Opportunity
+from polyarb.models import DetectorKind, Market, Opportunity
+from polyarb.sinks.notify import Notifier
 from polyarb.sinks.store import OpportunityStore
 
 _ZERO = Decimal(0)
@@ -37,6 +38,7 @@ class SettlementRun:
     settled: int  # resolved cleanly (all legs 0/1)
     void: int  # settled but a leg voided off {0,1}
     still_pending: int  # at least one leg not yet resolved
+    alerted: int = 0  # E2 — structural locks that settled negative (an audited failure)
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,7 @@ async def poll_settlements(
     store: OpportunityStore,
     resolver: MarketResolver,
     *,
+    notifier: Notifier | None = None,
     batch_limit: int = 500,
 ) -> SettlementRun:
     """Read-only pass: settle any pending ledger event whose legs have all resolved (E1-c).
@@ -119,16 +122,22 @@ async def poll_settlements(
     (Gamma reads only — never touches a signing client), settles each fully-resolved event, and
     writes the realized outcome back. Events with an unresolved leg are left pending for a later
     pass. Safe to call on a slow cadence from the scanner or manually via ``polyarb settle``.
+
+    E2 — when a **structural** ("guaranteed") lock settles with realized P&L < 0, fire an audit
+    alert via ``notifier``. This catches the failure modes a model-free lock can still hit — a
+    50-50 void (A2-void), a mis-declared relation (D1/D2), an unfilled leg. Directional partial
+    baskets are excluded (they're EV bets, expected to sometimes lose). Each event settles exactly
+    once (it leaves the pending set), so it alerts at most once — no extra dedupe needed.
     """
     entries = store.pending_events(limit=batch_limit)
     if not entries:
-        return SettlementRun(checked=0, settled=0, void=0, still_pending=0)
+        return SettlementRun(checked=0, settled=0, void=0, still_pending=0, alerted=0)
 
     condition_ids = sorted({cid for entry in entries for cid in entry.opp.condition_ids})
     markets = await resolver.resolved_markets(condition_ids)
     resolved = token_resolution_map(markets)
 
-    settled = void = still_pending = 0
+    settled = void = still_pending = alerted = 0
     for entry in entries:
         result = settle(entry.opp, resolved)
         if result is None:
@@ -146,6 +155,23 @@ async def poll_settlements(
         else:
             settled += 1
 
+        # E2 — a structural lock that settled negative is an audit failure worth an alarm.
+        if (
+            notifier is not None
+            and result.realized_pnl < _ZERO
+            and entry.opp.detector != DetectorKind.PARTIAL_BASKET
+        ):
+            alerted += 1
+            await notifier.alert(
+                "polyarb: guaranteed arb settled NEGATIVE",
+                f"{entry.opp.detector} {entry.fingerprint} realized "
+                f"${result.realized_pnl} (status={result.status}) :: {entry.opp.description}",
+            )
+
     return SettlementRun(
-        checked=len(entries), settled=settled, void=void, still_pending=still_pending
+        checked=len(entries),
+        settled=settled,
+        void=void,
+        still_pending=still_pending,
+        alerted=alerted,
     )

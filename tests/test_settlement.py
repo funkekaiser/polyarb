@@ -185,6 +185,68 @@ def test_poll_empty_ledger_is_a_noop() -> None:
         assert resolver.asked == []  # never queried Gamma with an empty ledger
 
 
+class _FakeNotifier:
+    def __init__(self) -> None:
+        self.alerts: list[tuple[str, str]] = []
+
+    async def notify(self, opp: Opportunity) -> None:
+        pass
+
+    async def alert(self, title: str, body: str) -> None:
+        self.alerts.append((title, body))
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _loss_resolver() -> _FakeResolver:
+    # B voids (yB → 0.5), A occurs (nA → 0): a YES_B + NO_A lock loses.
+    return _FakeResolver(
+        [
+            _resolved_market("0xB", ["yB", "nB"], ["0.5", "0.5"]),
+            _resolved_market("0xA", ["yA", "nA"], ["1", "0"]),
+        ]
+    )
+
+
+def _dep_loss_opp(detector: DetectorKind = DetectorKind.DEPENDENCY) -> Opportunity:
+    opp = _opp([_leg("yB", "0.30"), _leg("nA", "0.30")], detector=detector)
+    opp.condition_ids = ["0xA", "0xB"]
+    return opp
+
+
+def test_poll_alerts_on_structural_negative_settlement() -> None:
+    notifier = _FakeNotifier()
+    with SqliteStore() as store:
+        store.record(_dep_loss_opp())
+        run = asyncio.run(poll_settlements(store, _loss_resolver(), notifier=notifier))
+        assert run.void == 1 and run.alerted == 1
+        assert len(notifier.alerts) == 1
+        assert "NEGATIVE" in notifier.alerts[0][0]
+
+
+def test_poll_does_not_alert_on_directional_partial_basket() -> None:
+    # A partial basket is a directional EV bet — a loss is expected, not an audit failure.
+    notifier = _FakeNotifier()
+    with SqliteStore() as store:
+        store.record(_dep_loss_opp(detector=DetectorKind.PARTIAL_BASKET))
+        run = asyncio.run(poll_settlements(store, _loss_resolver(), notifier=notifier))
+        assert run.alerted == 0
+        assert notifier.alerts == []
+
+
+def test_poll_does_not_alert_on_a_winning_settlement() -> None:
+    notifier = _FakeNotifier()
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    opp.condition_ids = ["0xA"]
+    resolver = _FakeResolver([_resolved_market("0xA", ["yA", "nA"], ["1", "0"])])
+    with SqliteStore() as store:
+        store.record(opp)
+        run = asyncio.run(poll_settlements(store, resolver, notifier=notifier))
+        assert run.settled == 1 and run.alerted == 0
+        assert notifier.alerts == []
+
+
 def test_scanner_settle_pending_wires_the_poller() -> None:
     # The scanner's slow-cadence hook drives the read-only poller against its own store + gamma.
     from polyarb.config import Settings

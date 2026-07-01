@@ -129,22 +129,25 @@ def settle(
     from polyarb.clients.gamma import GammaClient
     from polyarb.config import load_settings
     from polyarb.engine.settlement import SettlementRun, poll_settlements
+    from polyarb.sinks.notify import build_notifier
     from polyarb.sinks.store import SqliteStore
 
     settings = load_settings()
 
     async def _run() -> SettlementRun:
         store = SqliteStore(settings.sqlite_path)
+        notifier = build_notifier(settings.notifier, settings.notifier_url)
         try:
             async with GammaClient() as gamma:
-                return await poll_settlements(store, gamma, batch_limit=batch)
+                return await poll_settlements(store, gamma, notifier=notifier, batch_limit=batch)
         finally:
+            await notifier.aclose()
             store.close()
 
     result = asyncio.run(_run())
     typer.echo(
-        f"settle: checked={result.checked} settled={result.settled} "
-        f"void={result.void} pending={result.still_pending}"
+        f"settle: checked={result.checked} settled={result.settled} void={result.void} "
+        f"pending={result.still_pending} alerted={result.alerted}"
     )
 
 

@@ -198,3 +198,54 @@ def test_discord_swallows_transport_error() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     notifier = DiscordNotifier("https://discord.com/api/webhooks/123/abc", client=client)
     asyncio.run(notifier.notify(_opp()))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# alert() — the generic text alarm (E2 settlement alerts)
+# ---------------------------------------------------------------------------
+
+
+def test_null_notifier_alert_is_noop() -> None:
+    asyncio.run(NullNotifier().alert("t", "b"))  # must not raise
+
+
+def test_webhook_alert_posts_title_and_body() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    notifier = WebhookNotifier("https://example.com/hook", client=client)
+    asyncio.run(notifier.alert("polyarb: settled NEGATIVE", "dep fp realized $-10"))
+
+    assert len(captured) == 1
+    body = json.loads(captured[0].content)
+    assert body == {"title": "polyarb: settled NEGATIVE", "body": "dep fp realized $-10"}
+
+
+def test_discord_alert_posts_content() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    notifier = DiscordNotifier("https://discord.test/webhook", client=client)
+    asyncio.run(notifier.alert("polyarb: settled NEGATIVE", "dep fp realized $-10"))
+
+    body = json.loads(captured[0].content)
+    assert "content" in body
+    assert "settled NEGATIVE" in body["content"]
+
+
+def test_alert_swallows_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    asyncio.run(WebhookNotifier("https://example.com/hook", client=client).alert("t", "b"))
+    client2 = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    asyncio.run(DiscordNotifier("https://discord.test/webhook", client=client2).alert("t", "b"))

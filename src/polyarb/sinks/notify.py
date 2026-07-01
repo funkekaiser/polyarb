@@ -26,6 +26,10 @@ class Notifier(Protocol):
         """Send an alert for a detected opportunity. Must not raise."""
         ...
 
+    async def alert(self, title: str, body: str) -> None:
+        """Send a generic text alert (e.g. the E2 settlement alarm). Must not raise."""
+        ...
+
     async def aclose(self) -> None:
         """Release any resources (e.g. an owned HTTP client). Call on shutdown."""
         ...
@@ -35,6 +39,9 @@ class NullNotifier:
     """Silent notifier — the default when no alert target is configured."""
 
     async def notify(self, opp: Opportunity) -> None:
+        pass
+
+    async def alert(self, title: str, body: str) -> None:
         pass
 
     async def aclose(self) -> None:
@@ -71,6 +78,16 @@ class WebhookNotifier:
             # Protocol guarantee: notify() must never raise. httpx.InvalidURL (a malformed
             # NOTIFIER_URL) is NOT an httpx.HTTPError, so a narrower catch would let it escape
             # into the scanner's emit loop and wedge it. Swallow everything non-Cancel here.
+            log.warning("webhook_error", url=self._url, error=str(exc))
+
+    async def alert(self, title: str, body: str) -> None:
+        """POST a generic {title, body} alert; swallows all errors."""
+        try:
+            resp = await self._client.post(self._url, json={"title": title, "body": body})
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            log.warning("webhook_http_error", url=self._url, status=exc.response.status_code)
+        except Exception as exc:
             log.warning("webhook_error", url=self._url, error=str(exc))
 
     async def aclose(self) -> None:
@@ -133,6 +150,17 @@ class DiscordNotifier:
         except Exception as exc:
             # notify() must never raise (see WebhookNotifier): a malformed URL raises
             # httpx.InvalidURL, which is not an httpx.HTTPError. Swallow everything non-Cancel.
+            log.warning("discord_error", url=self._url, error=str(exc))
+
+    async def alert(self, title: str, body: str) -> None:
+        """POST a plain-text alert as Discord `content`; swallows all errors."""
+        content = f"**{title}**\n{body}"[:2000]  # Discord content cap
+        try:
+            resp = await self._client.post(self._url, json={"content": content})
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            log.warning("discord_http_error", url=self._url, status=exc.response.status_code)
+        except Exception as exc:
             log.warning("discord_error", url=self._url, error=str(exc))
 
     async def aclose(self) -> None:

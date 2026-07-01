@@ -357,7 +357,7 @@ class Scanner:
 
     async def _settle_pending(self) -> None:
         """Read-only: poll Gamma for the resolution of pending ledger events (E1, slow cadence)."""
-        run = await poll_settlements(self._store, self._gamma)
+        run = await poll_settlements(self._store, self._gamma, notifier=self._notifier)
         if run.checked:
             log.info(
                 "settle_pass",
@@ -365,6 +365,7 @@ class Scanner:
                 settled=run.settled,
                 void=run.void,
                 pending=run.still_pending,
+                alerted=run.alerted,
             )
 
     async def scan_once(self) -> list[Opportunity]:
