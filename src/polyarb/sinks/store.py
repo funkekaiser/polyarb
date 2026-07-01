@@ -152,18 +152,32 @@ CREATE TABLE IF NOT EXISTS economic_events (
 # column is already present, so it is guarded at call time.
 _MIGRATE_SHADOW = "ALTER TABLE economic_events ADD COLUMN shadow INTEGER NOT NULL DEFAULT 0"
 
-# First detection inserts; a re-detection only bumps the count + last-seen (first-seen economics
-# and any recorded resolution are preserved). `shadow` distinguishes real emissions (0) from
-# sub-floor OBSERVATIONS recorded only to measure arrival rate (1, rec #3); a re-detection never
-# flips shadow, so a real event stays real.
+# First detection inserts; a re-detection bumps count + last-seen (first-seen economics and any
+# resolution preserved). REAL emissions dominate: a real record always sets shadow=0, so an event
+# that was ever emitted graduates out of the shadow experiment and stays real.
 _UPSERT_EVENT = """
 INSERT INTO economic_events
     (fingerprint, detector, condition_ids, realizes,
      first_detected_at, last_detected_at, detection_count, payload, status, shadow)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'pending', ?)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'pending', 0)
+ON CONFLICT(fingerprint) DO UPDATE SET
+    last_detected_at = excluded.last_detected_at,
+    detection_count  = detection_count + 1,
+    shadow           = 0
+"""
+
+# Shadow observations (rec #3) must NEVER touch a real row: the ON CONFLICT update is guarded to
+# shadow rows only, so a re-detection of an event that is (or becomes) real is dropped rather than
+# merged into — and never inflates the real row's count. New fingerprints insert as shadow=1.
+_UPSERT_SHADOW = """
+INSERT INTO economic_events
+    (fingerprint, detector, condition_ids, realizes,
+     first_detected_at, last_detected_at, detection_count, payload, status, shadow)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'pending', 1)
 ON CONFLICT(fingerprint) DO UPDATE SET
     last_detected_at = excluded.last_detected_at,
     detection_count  = detection_count + 1
+WHERE economic_events.shadow = 1
 """
 
 _RESOLVE_EVENT = """
@@ -250,7 +264,7 @@ class SqliteStore:
                 payload,
             ),
         )
-        self._conn.execute(_UPSERT_EVENT, self._event_params(opp, detected_at, shadow=0))
+        self._conn.execute(_UPSERT_EVENT, self._event_params(opp, detected_at))
         self._conn.commit()
 
     def record_shadow(self, opp: Opportunity) -> None:
@@ -261,11 +275,11 @@ class SqliteStore:
         often distinct below-`MIN_NOTIONAL` edges appear. No raw ``opportunities`` row, no notify.
         """
         detected_at = datetime.now(tz=UTC).isoformat()
-        self._conn.execute(_UPSERT_EVENT, self._event_params(opp, detected_at, shadow=1))
+        self._conn.execute(_UPSERT_SHADOW, self._event_params(opp, detected_at))
         self._conn.commit()
 
     @staticmethod
-    def _event_params(opp: Opportunity, detected_at: str, *, shadow: int) -> tuple[object, ...]:
+    def _event_params(opp: Opportunity, detected_at: str) -> tuple[object, ...]:
         return (
             economic_fingerprint(opp),
             str(opp.detector),
@@ -274,7 +288,6 @@ class SqliteStore:
             detected_at,
             detected_at,
             opp.model_dump_json(),
-            shadow,
         )
 
     def distinct_events(self) -> int:

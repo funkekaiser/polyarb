@@ -159,6 +159,31 @@ def test_shadow_observations_are_isolated_from_real_ledger() -> None:
         assert shadow_events[0].detection_count == 2
 
 
+def test_shadow_never_merges_into_a_real_event() -> None:
+    # Same fingerprint as a REAL event: record_shadow must NOT merge into the real row (the bug),
+    # must NOT create a duplicate, and must NOT inflate the real detection count.
+    opp = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
+    with SqliteStore() as store:
+        store.record(opp)
+        store.record_shadow(opp)
+        store.record_shadow(opp)
+        assert store.distinct_events() == 1  # still one real event
+        assert store.shadow_events() == []  # nothing leaked into the shadow view
+        assert store.pending_events()[0].detection_count == 1  # real detections only, not bumped
+
+
+def test_shadow_graduates_to_real_on_a_real_emission() -> None:
+    # An event first seen sub-floor (shadow), then emitted for real, becomes real.
+    opp = _opp(condition_ids=["0xB"], legs=[_leg("yB")])
+    with SqliteStore() as store:
+        store.record_shadow(opp)
+        assert len(store.shadow_events()) == 1
+        store.record(opp)  # real emission dominates
+        assert store.shadow_events() == []
+        assert store.distinct_events() == 1
+        assert [e.opp.condition_ids for e in store.events()] == [["0xB"]]
+
+
 def test_events_reader_round_trips_realized_pnl() -> None:
     opp = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
     fp = economic_fingerprint(opp)
