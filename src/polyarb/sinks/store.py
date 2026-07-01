@@ -7,6 +7,7 @@ for tests) with one row per opportunity, plus the full JSON payload for round-tr
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -60,6 +61,10 @@ class OpportunityStore(Protocol):
         """Persist one opportunity (raw log) and upsert its economic event. Commits immediately."""
         ...
 
+    def record_shadow(self, opp: Opportunity) -> None:
+        """Record a sub-floor observation to the ledger only (shadow=1; rec #3 arrival-rate)."""
+        ...
+
     def recent(self, limit: int = 100) -> list[Opportunity]:
         """Return the most-recently recorded opportunities, newest first."""
         ...
@@ -77,7 +82,11 @@ class OpportunityStore(Protocol):
         ...
 
     def events(self, limit: int = 10000) -> list[LedgerEntry]:
-        """All economic events, newest first, including realized outcomes."""
+        """All REAL economic events, newest first, including realized outcomes."""
+        ...
+
+    def shadow_events(self, limit: int = 100000) -> list[LedgerEntry]:
+        """Distinct shadow observations, oldest first (rec #3 arrival-rate experiment)."""
         ...
 
     def record_resolution(
@@ -134,17 +143,24 @@ CREATE TABLE IF NOT EXISTS economic_events (
     resolved_at       TEXT,
     realized_payoff   REAL,
     realized_pnl      REAL,
-    resolution_detail TEXT
+    resolution_detail TEXT,
+    shadow            INTEGER NOT NULL DEFAULT 0
 )
 """
 
+# Migration for DBs created before the `shadow` column existed (E1-d/rec-#3). ALTER fails if the
+# column is already present, so it is guarded at call time.
+_MIGRATE_SHADOW = "ALTER TABLE economic_events ADD COLUMN shadow INTEGER NOT NULL DEFAULT 0"
+
 # First detection inserts; a re-detection only bumps the count + last-seen (first-seen economics
-# and any recorded resolution are preserved).
+# and any recorded resolution are preserved). `shadow` distinguishes real emissions (0) from
+# sub-floor OBSERVATIONS recorded only to measure arrival rate (1, rec #3); a re-detection never
+# flips shadow, so a real event stays real.
 _UPSERT_EVENT = """
 INSERT INTO economic_events
     (fingerprint, detector, condition_ids, realizes,
-     first_detected_at, last_detected_at, detection_count, payload, status)
-VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'pending')
+     first_detected_at, last_detected_at, detection_count, payload, status, shadow)
+VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'pending', ?)
 ON CONFLICT(fingerprint) DO UPDATE SET
     last_detected_at = excluded.last_detected_at,
     detection_count  = detection_count + 1
@@ -161,10 +177,11 @@ _EVENT_COLS = (
     "last_detected_at, realized_payoff, realized_pnl"
 )
 
+# Real events only (shadow=0): the poller and P&L views must never touch sub-floor observations.
 _PENDING_EVENTS = f"""
 SELECT {_EVENT_COLS}
 FROM economic_events
-WHERE status = 'pending'
+WHERE status = 'pending' AND shadow = 0
 ORDER BY first_detected_at ASC
 LIMIT ?
 """
@@ -172,13 +189,23 @@ LIMIT ?
 _ALL_EVENTS = f"""
 SELECT {_EVENT_COLS}
 FROM economic_events
+WHERE shadow = 0
 ORDER BY first_detected_at DESC
+LIMIT ?
+"""
+
+# Shadow observations only (rec #3 arrival-rate experiment), oldest first for arrival timing.
+_SHADOW_EVENTS = f"""
+SELECT {_EVENT_COLS}
+FROM economic_events
+WHERE shadow = 1
+ORDER BY first_detected_at ASC
 LIMIT ?
 """
 
 _RECENT = "SELECT payload FROM opportunities ORDER BY id DESC LIMIT ?"
 _COUNT = "SELECT COUNT(*) FROM opportunities"
-_COUNT_EVENTS = "SELECT COUNT(*) FROM economic_events"
+_COUNT_EVENTS = "SELECT COUNT(*) FROM economic_events WHERE shadow = 0"
 
 
 class SqliteStore:
@@ -194,6 +221,9 @@ class SqliteStore:
         self._conn = sqlite3.connect(str(path))
         self._conn.execute(_CREATE)
         self._conn.execute(_CREATE_EVENTS)
+        # Migrate pre-`shadow` DBs; ALTER raises if the column already exists.
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute(_MIGRATE_SHADOW)
         self._conn.commit()
 
     # -- OpportunityStore interface --
@@ -220,24 +250,42 @@ class SqliteStore:
                 payload,
             ),
         )
-        self._conn.execute(
-            _UPSERT_EVENT,
-            (
-                economic_fingerprint(opp),
-                str(opp.detector),
-                json.dumps(opp.condition_ids),
-                opp.realizes,
-                detected_at,
-                detected_at,
-                payload,
-            ),
-        )
+        self._conn.execute(_UPSERT_EVENT, self._event_params(opp, detected_at, shadow=0))
         self._conn.commit()
 
+    def record_shadow(self, opp: Opportunity) -> None:
+        """Record a sub-floor OBSERVATION to the ledger only (rec #3 arrival-rate experiment).
+
+        Deduped by fingerprint like a real event, but tagged ``shadow=1`` so it never enters the
+        raw feed, the settlement poller, or realized-P&L views — it exists purely to measure how
+        often distinct below-`MIN_NOTIONAL` edges appear. No raw ``opportunities`` row, no notify.
+        """
+        detected_at = datetime.now(tz=UTC).isoformat()
+        self._conn.execute(_UPSERT_EVENT, self._event_params(opp, detected_at, shadow=1))
+        self._conn.commit()
+
+    @staticmethod
+    def _event_params(opp: Opportunity, detected_at: str, *, shadow: int) -> tuple[object, ...]:
+        return (
+            economic_fingerprint(opp),
+            str(opp.detector),
+            json.dumps(opp.condition_ids),
+            opp.realizes,
+            detected_at,
+            detected_at,
+            opp.model_dump_json(),
+            shadow,
+        )
+
     def distinct_events(self) -> int:
-        """Total distinct economic events (deduped by fingerprint)."""
+        """Total distinct REAL economic events (deduped by fingerprint; excludes shadow)."""
         row = self._conn.execute(_COUNT_EVENTS).fetchone()
         return int(row[0])
+
+    def shadow_events(self, limit: int = 100000) -> list[LedgerEntry]:
+        """Distinct shadow observations (rec #3), oldest first — for arrival-rate analysis."""
+        rows = self._conn.execute(_SHADOW_EVENTS, (limit,)).fetchall()
+        return [self._row_to_entry(row) for row in rows]
 
     @staticmethod
     def _row_to_entry(row: tuple[object, ...]) -> LedgerEntry:

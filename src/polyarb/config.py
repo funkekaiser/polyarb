@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # Only fires when a leg's market reports min_order_size; set False to disable.
     enforce_min_order_size: bool = True
     exclude_at_risk_resolution: bool = True
+    # Shadow-floor arrival-rate experiment (floor-analysis committee 2026-07-01, rec #3). When > 0,
+    # real, executable, quality edges whose notional is in [shadow_floor, MIN_NOTIONAL) are recorded
+    # to the E1 ledger as `shadow` OBSERVATIONS — never emitted, settled, or alerted — so the
+    # distinct-opp *arrival rate* below the floor can be measured over weeks (`polyarb backtest`).
+    # Set e.g. 1 to run the experiment; 0 (default) = off. The answer to "does small-edge volume
+    # exist?" is an arrival RATE, not the n=1 snapshot — this is the instrument to measure it.
+    shadow_floor_usdc: Decimal = Decimal(0)
     dedupe_cooldown_seconds: float = 300.0
     # §5 — opt-in probabilistic partial basket (docs/HEDGING.md §5). OFF by default and never on
     # the default scan path: when the full NegRisk basket can't be locked (a leg is unbuyable),

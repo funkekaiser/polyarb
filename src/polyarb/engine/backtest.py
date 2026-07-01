@@ -8,6 +8,7 @@ arithmetic uses :class:`~decimal.Decimal` to avoid float drift.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from polyarb.models import DetectorKind, Opportunity
@@ -254,4 +255,62 @@ def format_ledger_summary(summary: LedgerSummary) -> str:
                 f"  worst realized loss:  ${summary.worst_loss.quantize(q2)}  "
                 "(a 'guaranteed' arb that settled negative — see E2)"
             )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# rec #3 — shadow-floor arrival-rate summary. Distinct sub-MIN_NOTIONAL edges
+# observed (never traded), to answer "does small-edge volume exist?" over weeks.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ShadowArrivalSummary:
+    distinct: int  # distinct sub-floor economic events observed
+    span_days: float  # first arrival -> last arrival
+    per_day: float | None  # distinct/day (None until >= ~half a day of data)
+    bps_min: Decimal
+    bps_max: Decimal
+    notional_min: Decimal
+    notional_max: Decimal
+
+
+def summarize_shadow_arrivals(entries: list[LedgerEntry]) -> ShadowArrivalSummary | None:
+    """Arrival-rate stats over distinct shadow observations. None for an empty experiment."""
+    if not entries:
+        return None
+    firsts = [datetime.fromisoformat(e.first_detected_at) for e in entries]
+    span_days = (max(firsts) - min(firsts)).total_seconds() / 86400.0
+    bps = [e.opp.net_profit_bps for e in entries]
+    notional = [e.opp.decision_size * e.opp.cost for e in entries]
+    # A rate needs a meaningful window; below ~half a day it would extrapolate wildly.
+    per_day = (len(entries) / span_days) if span_days >= 0.5 else None
+    return ShadowArrivalSummary(
+        distinct=len(entries),
+        span_days=span_days,
+        per_day=per_day,
+        bps_min=min(bps),
+        bps_max=max(bps),
+        notional_min=min(notional),
+        notional_max=max(notional),
+    )
+
+
+def format_shadow_summary(summary: ShadowArrivalSummary | None) -> str:
+    """Render the shadow-floor arrival-rate summary (rec #3)."""
+    if summary is None:
+        return "Shadow-floor experiment — not running (set SHADOW_FLOOR_USDC > 0 to measure)."
+    q1 = Decimal("0.1")
+    q2 = Decimal("0.01")
+    lines = [
+        f"Shadow-floor experiment — {summary.distinct} distinct sub-floor "
+        f"edge{'' if summary.distinct == 1 else 's'} over {summary.span_days:.2f} days",
+        f"  edge (bps):      {summary.bps_min.quantize(q1)} - {summary.bps_max.quantize(q1)}",
+        f"  notional ($):    {summary.notional_min.quantize(q2)} - "
+        f"{summary.notional_max.quantize(q2)}",
+    ]
+    if summary.per_day is None:
+        lines.append("  arrival rate:    (need >= ~0.5 day of data; keep the run going)")
+    else:
+        lines.append(f"  arrival rate:    {summary.per_day:.2f} distinct/day")
     return "\n".join(lines)

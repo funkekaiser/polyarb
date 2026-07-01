@@ -141,6 +141,24 @@ def test_record_resolution_settles_and_removes_from_pending() -> None:
         assert store.distinct_events() == 1  # still tracked, just resolved
 
 
+def test_shadow_observations_are_isolated_from_real_ledger() -> None:
+    real = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
+    shadow = _opp(condition_ids=["0xB"], legs=[_leg("yB")])
+    with SqliteStore() as store:
+        store.record(real)
+        store.record_shadow(shadow)
+        store.record_shadow(shadow)  # re-detection dedupes
+        # Real views exclude shadow entirely.
+        assert store.distinct_events() == 1  # only the real one
+        assert [e.opp.condition_ids for e in store.events()] == [["0xA"]]
+        assert [e.opp.condition_ids for e in store.pending_events()] == [["0xA"]]
+        # Shadow view has the observation, deduped, with its detection count.
+        shadow_events = store.shadow_events()
+        assert len(shadow_events) == 1
+        assert shadow_events[0].opp.condition_ids == ["0xB"]
+        assert shadow_events[0].detection_count == 2
+
+
 def test_events_reader_round_trips_realized_pnl() -> None:
     opp = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
     fp = economic_fingerprint(opp)

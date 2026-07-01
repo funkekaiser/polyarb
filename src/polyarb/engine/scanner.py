@@ -180,6 +180,9 @@ class Scanner:
             DetectorKind.DEPENDENCY: self._dependency,
         }
         self._dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
+        # rec #3 shadow-floor experiment: a separate dedupe so recording sub-floor observations
+        # never interferes with the real feed's dedupe state.
+        self._shadow_dedupe = DedupeCache(settings.dedupe_cooldown_seconds)
         # Websocket streaming (phase 3, opt-in via streaming_enabled). The cache is kept fresh by
         # a StreamingBooks runner started in run(); scan passes then read books from the cache and
         # REST-confirm each candidate before emit (committee verdict — streaming is a trigger).
@@ -324,6 +327,19 @@ class Scanner:
             for token_id in market.clob_token_ids
         }
         kept = rank(filt.apply(opps, token_min_size))
+
+        # rec #3 — shadow-floor arrival-rate experiment. Re-run the SAME gates at the shadow floor
+        # and record (ledger-only, never emit) the real/executable/quality edges that clear the
+        # shadow floor but sit below MIN_NOTIONAL. Off unless shadow_floor_usdc > 0.
+        if self._settings.shadow_floor_usdc > 0:
+            shadow_settings = self._settings.model_copy(
+                update={"min_notional_usdc": self._settings.shadow_floor_usdc}
+            )
+            shadow_filt = OpportunityFilter(shadow_settings, self._shadow_dedupe)
+            for opp in shadow_filt.apply(opps, token_min_size):
+                if opp.decision_size * opp.cost < self._settings.min_notional_usdc:
+                    with contextlib.suppress(Exception):
+                        self._store.record_shadow(opp)
 
         emitted = 0  # count opps actually PERSISTED, not len(kept) — a store failure shouldn't
         # inflate the metric exactly when the system is degraded (disk full, SQLite locked).

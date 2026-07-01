@@ -101,9 +101,11 @@ def backtest(
     from polyarb.config import load_settings
     from polyarb.engine.backtest import (
         format_ledger_summary,
+        format_shadow_summary,
         format_summary,
         summarize,
         summarize_ledger,
+        summarize_shadow_arrivals,
     )
     from polyarb.sinks.store import SqliteStore
 
@@ -112,11 +114,14 @@ def backtest(
     try:
         opps = store.recent(limit)
         events = store.events()
+        shadow = store.shadow_events()
     finally:
         store.close()
     typer.echo(format_summary(summarize(opps)))
     typer.echo("")
     typer.echo(format_ledger_summary(summarize_ledger(events)))
+    typer.echo("")
+    typer.echo(format_shadow_summary(summarize_shadow_arrivals(shadow)))
 
 
 @app.command()

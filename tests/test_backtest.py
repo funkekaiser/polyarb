@@ -8,9 +8,11 @@ import pytest
 
 from polyarb.engine.backtest import (
     format_ledger_summary,
+    format_shadow_summary,
     format_summary,
     summarize,
     summarize_ledger,
+    summarize_shadow_arrivals,
 )
 from polyarb.models import DetectorKind, Opportunity
 from polyarb.sinks.store import LedgerEntry
@@ -294,3 +296,47 @@ def test_format_ledger_flags_negative_settlement() -> None:
     out = format_ledger_summary(s)
     assert "worst realized loss" in out
     assert "settled negative" in out  # the E2 hook is called out for the user
+
+
+# --- rec #3: shadow-floor arrival-rate summary ---
+
+
+def _shadow_entry(fp: str, first: str, bps: str, cost: str, size: str) -> LedgerEntry:
+    opp = _opp(net_profit_bps=bps, cost=cost, executable_size=size)
+    return LedgerEntry(
+        fingerprint=fp,
+        opp=opp,
+        status="pending",
+        detection_count=1,
+        first_detected_at=first,
+        last_detected_at=first,
+    )
+
+
+def test_summarize_shadow_empty_is_none() -> None:
+    assert summarize_shadow_arrivals([]) is None
+    assert "not running" in format_shadow_summary(None)
+
+
+def test_summarize_shadow_arrival_rate_over_multi_day_span() -> None:
+    entries = [
+        _shadow_entry("a", "2026-07-01T00:00:00+00:00", "40", "0.90", "10"),
+        _shadow_entry("b", "2026-07-03T00:00:00+00:00", "60", "0.80", "5"),
+    ]  # 2 distinct over a 2-day span → 1.0/day
+    s = summarize_shadow_arrivals(entries)
+    assert s is not None
+    assert s.distinct == 2
+    assert s.span_days == 2.0
+    assert s.per_day == 1.0
+    assert s.bps_min == Decimal("40") and s.bps_max == Decimal("60")
+    assert "1.00 distinct/day" in format_shadow_summary(s)
+
+
+def test_summarize_shadow_short_window_withholds_rate() -> None:
+    entries = [
+        _shadow_entry("a", "2026-07-01T00:00:00+00:00", "40", "0.90", "10"),
+        _shadow_entry("b", "2026-07-01T00:10:00+00:00", "50", "0.90", "10"),
+    ]  # 10-min span → too short to quote a rate
+    s = summarize_shadow_arrivals(entries)
+    assert s is not None and s.per_day is None
+    assert "need >=" in format_shadow_summary(s)
