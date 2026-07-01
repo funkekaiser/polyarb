@@ -38,11 +38,18 @@ The image ships safe defaults for every variable, so `.env` is optional — see
 **One-shot commands** (run a single command in a throwaway container, then exit):
 
 ```bash
-docker compose -f docker/docker-compose.yml run --rm scan backtest   # summarize stored history
-docker compose -f docker/docker-compose.yml run --rm scan replay     # oldest-first feed
+docker compose -f docker/docker-compose.yml run --rm scan backtest   # summarize stored history + realized P&L
+docker compose -f docker/docker-compose.yml run --rm scan ledger      # DISTINCT opps, one line each (deduped)
+docker compose -f docker/docker-compose.yml run --rm scan settle      # poll Gamma for resolutions, record realized P&L
+docker compose -f docker/docker-compose.yml run --rm scan replay     # raw oldest-first feed (one row per detection)
 docker compose -f docker/docker-compose.yml run --rm scan record     # capture live fixtures
 docker compose -f docker/docker-compose.yml run --rm scan version    # smoke check
 ```
+
+`ledger` (each distinct economic event once, with `xN` = times seen; `--shadow` for sub-floor
+observations) vs `replay` (every raw detection). `settle` is read-only — it fetches how the tracked
+markets resolved and records realized P&L; the scanner also runs it on a slow in-loop cadence
+(`SETTLE_INTERVAL_SECONDS`). See [§The realized-outcome ledger](#the-realized-outcome-ledger-e1e2).
 
 ---
 
@@ -113,13 +120,36 @@ Read the stored history with the analytics commands (Docker one-shots shown; loc
 `make backtest` / `make replay`):
 
 ```bash
-docker compose -f docker/docker-compose.yml run --rm scan backtest   # aggregate summary
-docker compose -f docker/docker-compose.yml run --rm scan replay     # chronological feed
+docker compose -f docker/docker-compose.yml run --rm scan backtest   # aggregate summary + realized P&L
+docker compose -f docker/docker-compose.yml run --rm scan ledger      # distinct opps, one line each (xN = times seen)
+docker compose -f docker/docker-compose.yml run --rm scan replay     # raw chronological feed (one row per detection)
 ```
 
 **Logs.** The scanner emits structured JSON to stdout (one object per line) — `timestamp`,
 `level`, `event`, plus per-opportunity fields. `make docker-logs` tails them. Set
 `LOG_LEVEL=DEBUG` for per-leg book reads, rate-limit events, and filter decisions.
+
+---
+
+## The realized-outcome ledger (E1/E2)
+
+Detection records opportunities; the **ledger** learns how they actually resolved — so
+"guaranteed" is audited against reality, not just asserted.
+
+- **Distinct events, not re-detections.** The same arb is re-seen every ~5s. The ledger
+  (`economic_events` table) dedupes by a fingerprint (`detector` + condition-set + leg structure),
+  so `ledger` lists each distinct opp **once** with `xN` = times seen. `replay` is the raw view.
+- **Settlement (read-only).** `settle` — and the scanner's in-loop `SETTLE_INTERVAL_SECONDS`
+  cadence — polls Gamma for how each pending event's markets resolved and records **realized
+  payoff + P&L**. Resolved prices settle near (not exactly) 0/1; a leg settling near 0.5 is a
+  **void**. Read the results in `backtest` (win rate, realized P&L, worst loss).
+- **The audit alarm (E2).** When a *structural* ("guaranteed") lock settles **negative** — a void,
+  a mis-declared relation, an unfilled leg — the notifier fires an alert. Directional partial
+  baskets are excluded (they're EV bets).
+- **Shadow experiment (`SHADOW_FLOOR_USDC`).** Sub-`MIN_NOTIONAL` real edges are recorded as
+  isolated `shadow` observations (never emitted/settled/alerted) purely to measure the distinct
+  **arrival rate** below the floor over weeks — the honest way to answer "does small-edge volume
+  exist?". View with `ledger --shadow` / `backtest`. Off by default. Background: `reports/floor-analysis.md`.
 
 ---
 
@@ -132,10 +162,14 @@ into the image. The source of truth is `src/polyarb/config.py`.
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 | `SCAN_INTERVAL_SECONDS` | `5` | Seconds between scanner loop iterations. |
+| `SETTLE_INTERVAL_SECONDS` | `3600` | Cadence of the in-loop read-only settlement poller (E1): how often the scanner checks Gamma for the resolution of pending ledger events. `0` disables in-loop settling (use the `settle` command). |
 | `MIN_PROFIT_BPS` | `30` | Minimum net-of-fees profit (basis points) to report an opportunity. |
-| `MIN_NOTIONAL_USDC` | `50` | Minimum executable size (USDC) — smaller opportunities are discarded. |
-| `GAS_ESTIMATE` | `0.02` | Conservative static gas ceiling per opportunity (USDC). Relayer gas is ~$0 real cost; this is a safety margin. See `docs/API_NOTES.md` §Gas. |
-| `GAS_PER_LEG_ESTIMATE` | `0.05` | Per-leg component of the gas ceiling (USDC), scaled by leg count. Matters most for high-N NegRisk baskets. |
+| `MIN_NOTIONAL_USDC` | `50` | Minimum executable notional (USDC), gated on the conservative `decision_size` — smaller opportunities are discarded. |
+| `MIN_ANNUALIZED_RETURN` | `0` | Annualized-return gate for held-to-resolution arbs (a fraction, e.g. `0.08` = 8%/yr). A fat per-set bps can still annualize below a savings account over a long lockup. `0` = disabled; instant arbs are always exempt. See `reports/floor-analysis.md`. |
+| `ENFORCE_MIN_ORDER_SIZE` | `true` | Reject a basket whose per-leg order (conservative `decision_size`) is below a leg's market minimum (live-verified: 5 shares) — an unplaceable "edge" is a phantom. Redundant at the $50 floor; the safety gate for any lower floor. |
+| `SHADOW_FLOOR_USDC` | `0` | Arrival-rate experiment: when `> 0`, real/executable/quality edges below `MIN_NOTIONAL` (down to this floor) are recorded to the ledger as `shadow` observations — never emitted/settled/alerted — so `backtest`/`ledger --shadow` can measure the distinct sub-floor **arrival rate** over weeks. `0` = off. |
+| `GAS_ESTIMATE` | `0` | Fixed gas per opportunity (USDC). Default `0`: via Polymarket's relayer real user gas is ~$0 (committee-confirmed). Set `~0.02` to re-enable a conservative raw-EOA ceiling. See `docs/API_NOTES.md` §Gas. |
+| `GAS_PER_LEG_ESTIMATE` | `0` | Per-leg gas component (USDC), scaled by leg count. Default `0` (relayer reality); set `~0.05` for a raw-EOA ceiling. |
 | `USE_DYNAMIC_GAS` | `false` | When `true`, fetch live gas each pass (Polygon Gas Station + CoinGecko POL/USD) instead of the static estimates; any oracle failure falls back to static. |
 | `EXCLUDE_AT_RISK_RESOLUTION` | `true` | Drop opportunities whose resolution source is flagged high-risk. |
 | `MAX_BOOK_AGE_S` | `900` | Drop order books whose CLOB timestamp is older than this (seconds). `0` disables the staleness gate. |

@@ -42,10 +42,11 @@ no test hits the live API.
 | `test_complement.py` / `test_negrisk.py` / `test_dependency.py` | per-detector emit / no-emit / edge cases |
 | `test_relations.py` | ladder directions, equal-bound handling, fingerprint cohorts, DAG closure & exclusions |
 | `test_models.py` / `test_clients.py` | API-quirk parsing (JSON-string fields, blank→None, end dates) / clients via MockTransport |
-| `test_filters.py` / `test_ranking.py` / `test_risk.py` | thresholds + dedupe / ordering / risk tagging |
-| `test_store.py` / `test_notify.py` / `test_metrics.py` | SQLite round-trip / webhook+null notifier / Prometheus counters |
+| `test_filters.py` / `test_ranking.py` / `test_risk.py` | thresholds + dedupe + **annualized gate** + **per-leg min-order (D5)** / ordering / risk tagging |
+| `test_store.py` / `test_notify.py` / `test_metrics.py` | SQLite round-trip + **E1 ledger dedup / shadow isolation** / webhook+null+**alert()** / Prometheus counters |
+| `test_settlement.py` | **E1/E2** — realized-payoff math (epsilon-off/void rounding), read-only poller, settle-negative alarm |
 | `test_scanner.py` | end-to-end discover→detect→filter→rank→persist over MockTransport |
-| `test_backtest.py` | analytics summary (counts, bps stats, P&L, median) |
+| `test_backtest.py` | analytics summary + **realized-P&L ledger** + **shadow arrival rate** + deduped `ledger` lines |
 | `test_bugfixes.py` | **regression tests for every bug in §4** |
 
 ### Running

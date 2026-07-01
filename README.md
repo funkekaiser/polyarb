@@ -30,7 +30,9 @@ make docker-down      # stop (SQLite history is preserved in a named volume)
 
 The container runs `scan --dry-run` (continuous, read-only), restarts unless stopped, and
 persists everything it finds to a volume that survives restarts and rebuilds. Results live in
-SQLite at `/data/polyarb.db`; query them with `… run --rm scan backtest` / `replay`.
+SQLite at `/data/polyarb.db`; query them with `… run --rm scan backtest` (summary + realized P&L) or
+`… run --rm scan ledger` (distinct opps, deduped). A read-only `settle` poller records how tracked
+markets resolved and audits the "guaranteed" claim (E1/E2).
 
 **→ Full operating guide: [docs/POLYARB_DOCS.md](docs/POLYARB_DOCS.md)** — how the container
 works, configuration, where results go, and the manual/local run (kept as a backup).

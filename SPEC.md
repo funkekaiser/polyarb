@@ -6,7 +6,7 @@ Build **`polyarb`**, a service that continuously scans Polymarket for **structur
 
 **Detection is the deliverable.** A separate, opt-in, default-disabled module *may* place orders later, but the project is valuable and complete as a read-only detector. Build it that way.
 
-> **Status (2026-07-01):** Phases 0–4 complete — the read-only scanner (clients + typed models, the three detectors with property-tested math incl. detector hardening, the dependency ladders/DAGs, engine/filters/ranking/sinks, Docker + analytics + the dynamic-gas oracle). **WebSocket streaming is now the DEFAULT read path** (in-memory book cache fed by the market channel; a candidate detected off the cache is REST-confirmed before emit; the REST poll is the resync/backup). The streaming runner is hardened (stall watchdog, dynamic resubscribe, freshness guard, stream-aware healthcheck + metrics) and **verified live in Docker**; committee-reviewed (SAFE, none blocking). See `docs/STRATEGY_BACKLOG.md` for the R1–R8 design + shipped/open state. Phase 5 (execution) is a **gated, default-OFF scaffold — not built**. Per-phase status is marked in the plan below.
+> **Status (2026-07-01):** Phases 0–4 complete — the read-only scanner (clients + typed models, the three detectors with property-tested math incl. detector hardening, the dependency ladders/DAGs, engine/filters/ranking/sinks, Docker + analytics + the dynamic-gas oracle). **WebSocket streaming is now the DEFAULT read path** (in-memory book cache fed by the market channel; a candidate detected off the cache is REST-confirmed before emit; the REST poll is the resync/backup). The streaming runner is hardened (stall watchdog, dynamic resubscribe, freshness guard, stream-aware healthcheck + metrics) and **verified live in Docker**; committee-reviewed (SAFE, none blocking). See `docs/STRATEGY_BACKLOG.md` for the R1–R8 design + shipped/open state. Beyond the phase plan, the **E1/E2 realized-outcome ledger** is shipped: emitted opps are deduped to distinct economic events, a read-only poller records how they resolved (realized P&L), and a settle-negative alarm audits the "guaranteed" claim (`engine/settlement.py`, `sinks/store.py`; commands `settle`/`ledger`). Phase 5 (execution) is a **gated, default-OFF scaffold — not built**. Per-phase status is marked in the plan below.
 
 The three structural edges to detect (math specified below):
 
@@ -138,13 +138,14 @@ polyarb/
       relations.py             # declared logical-dependency graph
     engine/
       scanner.py               # fetch -> detect -> filter -> rank -> emit (async loop)
-      filters.py               # fee/size/resolution/dedupe
+      filters.py               # fee/size/annualized/min-order/resolution/dedupe
       ranking.py               # sort by net_profit, annualized, risk
-      backtest.py              # summarize stored opportunity history
+      backtest.py              # stored-history summary + realized-P&L ledger + shadow arrival rate
+      settlement.py            # E1/E2 — realized-payoff math + read-only resolution poller + settle-negative alarm
       metrics.py               # optional Prometheus /metrics endpoint
     sinks/
-      store.py                 # SQLite persistence (interface + impl)
-      notify.py                # webhook/ntfy/discord (pluggable, optional)
+      store.py                 # SQLite persistence (interface + impl) + E1 economic-event ledger (deduped, shadow)
+      notify.py                # webhook/ntfy/discord (pluggable, optional); alert() drives the E2 alarm
     execution/                 # GATED — default OFF
       guard.py                 # EXECUTION_ENABLED check, max-notional cap, kill-switch, manual confirm  # Phase 5 — gated scaffold, default OFF
       executor.py              # multi-leg submission via polymarket-client (only behind guard)  # Phase 5 — gated scaffold, default OFF

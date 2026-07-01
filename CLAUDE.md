@@ -119,8 +119,10 @@ uv sync --dev                                    # RUN FIRST each session / afte
 uv run polyarb version                          # smoke check
 uv run polyarb scan --dry-run                   # read-only ranked opportunity feed (default)
 uv run polyarb record [--out DIR]               # capture live (read-only) samples → fixtures
-uv run polyarb backtest                         # summarize stored opportunity history
-uv run polyarb replay                           # print stored opportunities oldest-first
+uv run polyarb backtest                         # stored history summary + realized-P&L ledger + shadow arrivals
+uv run polyarb ledger                           # DISTINCT opps, one line each (deduped; xN = times seen; --shadow)
+uv run polyarb settle                           # read-only: poll Gamma for resolutions, record realized P&L (E1)
+uv run polyarb replay                           # raw stored opportunities oldest-first (one row per detection)
 uv run pytest                                    # full suite (offline, fixture-based)
 uv run pytest tests/test_models.py::test_name    # a single test
 uv run ruff check . && uv run ruff format .      # lint + format
@@ -160,7 +162,10 @@ Pipeline, end to end: **discover → read books → detect → filter → rank �
   dependency graph; adding a relation is a one-liner; never inferred from text). *[Phase 2 — built.]*
 - `engine/` — `scanner.py` async fetch→detect→filter→rank→emit loop; `filters.py`;
   `ranking.py`. *[Phase 3 — built.]*
-- `sinks/` — `store.py` (SQLite behind an interface) and `notify.py` (optional). *[Phase 3 — built.]*
+- `sinks/` — `store.py` (SQLite behind an interface; also the **E1 realized-outcome ledger** —
+  `economic_events` deduped by fingerprint, with `shadow` observations) and `notify.py` (optional;
+  `alert()` powers the E2 settle-negative alarm). Settlement math + the read-only poller live in
+  `engine/settlement.py`. *[Phase 3 + E1/E2 — built.]*
 - `execution/` — **GATED, default OFF.** `guard.py` (EXECUTION_ENABLED + max-notional cap +
   kill-switch + per-trade confirm); `executor.py` (multi-leg via `polymarket-client`, only
   through the guard). Never on the default scan path. *[Phase 5.]*
