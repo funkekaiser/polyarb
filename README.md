@@ -6,7 +6,12 @@ scores them net-of-fees, ranks by risk-adjusted/annualized return, persists, and
 
 **Detection is the product.** Execution is a separate, opt-in, default-OFF module.
 
-> Status: Phases 0–4 complete; Phase 5 (execution) gated off.
+It reads books **WebSocket-first**: an in-memory cache is kept fresh from the CLOB market channel,
+a candidate detected off the cache is REST-confirmed before it's emitted, and the REST poll is the
+resync/backup. (Set `STREAMING_ENABLED=false` to fall back to pure REST polling.)
+
+> Status: Phases 0–4 complete; WebSocket streaming is the default read path (verified live in
+> Docker); Phase 5 (execution) gated off.
 
 ## Structural edges detected
 

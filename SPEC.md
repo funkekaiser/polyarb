@@ -6,7 +6,7 @@ Build **`polyarb`**, a service that continuously scans Polymarket for **structur
 
 **Detection is the deliverable.** A separate, opt-in, default-disabled module *may* place orders later, but the project is valuable and complete as a read-only detector. Build it that way.
 
-> **Status (2026-06-30):** Phases 0–4 complete — the read-only scanner (clients + typed models, the three detectors with property-tested math incl. detector hardening, the dependency ladders/DAGs, engine/filters/ranking/sinks, Docker + analytics + the dynamic-gas oracle). Phase 5 (execution) is a **gated, default-OFF scaffold — not built**. Per-phase status is marked in the plan below.
+> **Status (2026-07-01):** Phases 0–4 complete — the read-only scanner (clients + typed models, the three detectors with property-tested math incl. detector hardening, the dependency ladders/DAGs, engine/filters/ranking/sinks, Docker + analytics + the dynamic-gas oracle). **WebSocket streaming is now the DEFAULT read path** (in-memory book cache fed by the market channel; a candidate detected off the cache is REST-confirmed before emit; the REST poll is the resync/backup). The streaming runner is hardened (stall watchdog, dynamic resubscribe, freshness guard, stream-aware healthcheck + metrics) and **verified live in Docker**; committee-reviewed (SAFE, none blocking). See `docs/STRATEGY_BACKLOG.md` for the R1–R8 design + shipped/open state. Phase 5 (execution) is a **gated, default-OFF scaffold — not built**. Per-phase status is marked in the plan below.
 
 The three structural edges to detect (math specified below):
 

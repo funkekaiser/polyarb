@@ -76,11 +76,12 @@ image is **`polyarb:latest`** — use those names with `docker exec` / `docker l
 - **Graceful shutdown.** `stop_grace_period: 30s` plus `init: true` (tini as PID 1) means a
   stop signal is forwarded cleanly; the scanner finishes its current pass and flushes SQLite
   before exiting.
-- **Healthcheck.** The compose file forces `METRICS_ENABLED=true` so the container serves
-  `/metrics` internally (not published to the host); the healthcheck scrapes it. A green
-  "healthy" status means the process is alive and serving. *Caveat:* `/metrics` runs on a
-  daemon thread, so the check detects a dead/crash-looping process — **not** a wedged scan
-  loop (a real loop-progress heartbeat is tracked as backlog D7).
+- **Healthcheck.** `polyarb healthcheck` reads the **scan heartbeat** file (`HEARTBEAT_PATH`,
+  written once per pass) and — because streaming is the default — the **WS heartbeat**
+  (`WS_HEARTBEAT_PATH`, pulsed on each applied WS message or successful resync). It exits non-zero
+  if either is stale, so it catches a *wedged scan loop* **and** a *frozen book cache* (WS + resync
+  both stuck), not merely a dead process. `METRICS_ENABLED=true` still serves `/metrics` internally
+  for Prometheus scraping (incl. the `ws_*` gauges), but liveness is the heartbeats, not `/metrics`.
 - **Hardening.** `read_only` root filesystem (only the `/data` volume + a `/tmp` tmpfs are
   writable), `cap_drop: ALL`, `no-new-privileges`, and CPU/memory/pids ceilings
   (`deploy.resources.limits`). Fits the read-only product: the container can read the API and
@@ -145,6 +146,13 @@ into the image. The source of truth is `src/polyarb/config.py`.
 | `METRICS_ENABLED` | `false` | Expose a Prometheus `/metrics` endpoint. Docker sets this `true` for scraping (the container liveness probe is the heartbeat, not `/metrics`). |
 | `METRICS_PORT` | `9090` | Port for `/metrics` when enabled. |
 | `HEARTBEAT_PATH` | _(empty)_ | When set, `Scanner.run` writes the last-pass timestamp here each pass; `polyarb healthcheck` reads it (Docker's liveness probe). Docker sets `/data/polyarb-heartbeat`. Leave empty for local runs. |
+| `STREAMING_ENABLED` | `true` | **WebSocket-first read path (the default).** Books are cached from the CLOB market channel and a candidate is REST-confirmed before emit; the REST poll is the resync/backup. Set `false` for pure REST polling. |
+| `WS_RESYNC_INTERVAL_S` | `60` | Cadence of the full-depth REST resync (the backup/correction read). |
+| `WS_STALL_TIMEOUT_S` | `60` | Force-reconnect a connected-but-silent feed after this many seconds (`0` disables). |
+| `WS_FRESHNESS_S` | `90` | Detect only off books refreshed (delta/resync) within this window. Keep `>= WS_RESYNC_INTERVAL_S` + margin. `0` disables. |
+| `WS_MAX_BACKOFF_S` | `30` | Cap on the exponential reconnect backoff. |
+| `WS_MAX_MESSAGE_BYTES` | `67108864` | Max inbound WS frame (bytes). The initial-dump snapshot is one large frame; the library's 1 MiB default would drop it. See `docs/API_NOTES.md` §WebSocket. |
+| `WS_HEARTBEAT_PATH` | _(empty)_ | When streaming, the runner pulses this on each WS message/resync; `polyarb healthcheck` requires it fresh (catches a frozen cache). Docker sets `/data/polyarb-ws-heartbeat`. |
 | `EXECUTION_ENABLED` | `false` | **Leave `false`.** Execution is Phase 5 and not built. |
 
 Example `.env`:

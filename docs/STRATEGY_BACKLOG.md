@@ -34,6 +34,13 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 | — | **Process** | review-panel pattern added to CLAUDE.md; full doc cleanup; behavior-preserving refactor (`walk_and_size_buy_basket`, `live_partition`). Parallel-worktree hardening batch (A3-q/D2/D6/F2/D7). |
 | C1-atom-use | **Filter+rank on conservative size** | committee (2-1) + desk: `MIN_NOTIONAL` gate and the $-rank now act on `Opportunity.decision_size` (conservative best-level depth, `is None`→optimistic fallback); `executable_size`/`total_net_profit` kept as the surfaced optimistic ceiling. Honest floor + winner's-curse-free rank for a small non-atomic taker; applies to the streamed path too (R4). |
 | A1-riskwt | **Live/total surfaced + soft rank tiebreak** | `Opportunity.live_count/total_count`; ranking's lowest-priority key prefers fuller baskets, clamped so it can never reorder real money. |
+| **WS-default** | **WebSocket is the DEFAULT read path** (2026-07-01) | `streaming_enabled=True`; REST poll demoted to the resync/backup. Committee-reviewed (3 lenses, all SAFE/none blocking) + 2× worktree bug-hunt; **verified live in Docker** (single connection, live deltas flowing, graceful SIGTERM shutdown). |
+| **R5** | **Stall watchdog** | per-message `asyncio.wait_for(anext)` deadline (`ws_stall_timeout_s`, def 60s) force-drops + reconnects a connected-but-silent feed (`ws_stalls` metric) so a dead feed can't silently degrade to a 60s poll. |
+| **R6** | **Dynamic (un)subscribe, no reconnect** | `ws.stream()` control-queue select loop forwards subscribe/unsubscribe ops on the live socket (API_NOTES §WS); `set_tokens` diffs the discovery set + evicts dropped from the cache. |
+| **R2** | **Streaming freshness guard** | `fresh_books()`/`scoped_fresh_books()` (loop-monotonic per-token) drop feed-silent tokens at detect time. Default `ws_freshness_s=90` ≥ `ws_resync_interval_s=60`+margin (committee fix: a shorter window blinked out quiescent tokens). Safety net atop R1. |
+| **R8** | **Streaming metrics + stream-aware healthcheck** | `ws_last_message`(true-delta-only) / `ws_last_resync` / `ws_reconnects` / `ws_stalls` / `ws_resyncs` / `ws_resync_errors` / `ws_tracked_tokens` / `ws_skipped`. WS-heartbeat pulses on message-or-resync (and when idle-with-no-tokens); healthcheck fails when the cache is frozen even while the scan loop pulses. |
+| **WS-maxsize** | **Live WS frame cap fix** | `websockets` 1 MiB default closed the connection on every connect (1009 MESSAGE_TOO_BIG — Polymarket's initial-dump is ~1.65 MiB/390 tokens); raised to 64 MiB (`WS_MAX_MESSAGE_BYTES`). **Caught by live Docker verification**; recorded in API_NOTES (dated). |
+| **R-hardening** | **Bug-hunt + committee fixes** | in-flight-resync no longer resurrects an evicted token (both hunters); `ws_factory` failure backs off instead of crashing run(); best-effort streaming-init; first-wake resync clock-independent; `pytest-socket` now hard-enforces the offline-test constraint. |
 
 ---
 
@@ -107,6 +114,19 @@ the sensible/"big" tier. (Memory: small-edge-strategy.)
 | D5 | ✶ | MED/LOW | Multi-leg risk aggregated by `max` understates compounded exposure; per-leg `min_order_size`/tick not enforced; no deterministic final tiebreak. | Address alongside C-layer / sizing. |
 | C-defer | C | LOW | Complement deferrals: greedy-walk vs threshold coupling; worst-fill `Leg.price` (Phase-5 executor); NegRisk merge routing + higher gas (Phase-5); 1e-28 VWAP rounding / min-size. | Mostly Phase-5 / negligible; revisit then. |
 
+## Open — Tier D-ws: streaming polish (committee, 2026-07-01 — all NON-BLOCKING)
+
+Surfaced by the streaming-default committee/bug-hunt. The migration shipped SAFE; these are
+scaling/observability refinements, several needing **live measurement** at the 600-market default.
+
+| # | Sev | Issue | Fix direction |
+|---|-----|-------|---------------|
+| WS-atomicity | MED | R1 confirm's per-leg REST fetches are non-atomic and are now the *sole* integrity barrier; a wide basket's legs can reflect slightly different moments. | Mitigated today by the 30 bps margin + tight freshness (a sub-tick skew can't flip a real-margin arb). Add a confirm pass/fail-rate metric to watch basket-confirm health; keep `ws_freshness_s` tight. |
+| WS-resync-burst | MED | The full resync bursts all ~1200 tracked tokens against the shared `/book` bucket every 60s, competing with latency-critical R1 confirm reads (R7 sharing is correct for quota, but timing-adverse). | Trickle/jitter the full resync across the interval (batched) rather than one gather burst; or give resync a lower effective sub-rate. Needs live tuning. |
+| WS-confirm-cap | LOW | A cache-corruption storm → many phantom candidates → confirm REST volume spikes on the shared limiter, potentially starving real confirmations. | Per-pass confirm cap + a candidates-seen-vs-confirmed metric; a spike signals cache degradation → force resync/alert. |
+| WS-evict-hysteresis | LOW | Per-pass `set_tokens` evicts a token the moment it leaves the discovery cap, discarding its accumulated WS book state + A3 hash-revert history; a token oscillating around the cap thrashes. | Defer eviction with a grace period (drop only after N consecutive absent discoveries); and/or make discovery ordering deterministic so the cap slices the same set. |
+| WS-quiet-churn | LOW | The stall timer resets only on an *applied* message, not WS ping/pong; a genuinely quiescent board would reconnect every `ws_stall_timeout_s`. Not a real risk at 1200 tokens (60s of total silence ⇒ dead), but a noise floor on `ws_reconnects`. | Treat any received frame as liveness, or scale the timeout with token count. Document the noise floor. |
+
 ## Open — Tier E: realized-outcome tracking & evaluation (added 2026-06-30)
 
 The natural next chunk *after* detection. Source: `docs/QUICK_THOUGHTS_OF_THE_DEV.md` (now
@@ -126,9 +146,11 @@ depend on it.** This is its own body of work, not a quick add.
 
 ## Roadmap — ordered execution plan (updated 2026-06-30)
 
-**State:** read-only monitor live in Docker — sensible tier (30 bps / $50), 600-market coverage,
-hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/small-edge tier
-**deferred** (see "Strategy direction" above — recon-killed for now). Work the items below in order.
+**State:** read-only **WebSocket-first** monitor live in Docker — sensible tier (30 bps / $50),
+600-market coverage, hardened container. Streaming is now the default (R1–R8 shipped + committee
++ live-verified); REST poll is the resync/backup. Diagnostics + coverage-widening shipped; recon
+done. Penny/small-edge tier **deferred** (see "Strategy direction" above — recon-killed for now).
+Remaining streaming polish is non-blocking (Tier D-ws). Work the items below in order.
 
 1. **Notifier wiring (Discord)** — *built.* `DiscordNotifier` (formatted embed) shipped; set
    `NOTIFIER=discord` + `NOTIFIER_URL=<channel webhook>` in the compose env so real opps actually
@@ -139,14 +161,14 @@ hardened container. Diagnostics + coverage-widening shipped; recon done. Penny/s
    **verify** each (resolution-fingerprint + adversarial committee hunting an A∧¬B scenario), then
    **register only verified** ones. Activates the dormant dependency detector with no manual
    curation. Resolves **D1** (fingerprint policy) as part of it. Gate + committee before commit.
-3. **Websocket streaming** — in-memory books from deltas: real-time detection + far less CPU/IO
-   than re-fetching ~924 books/pass; the only way to catch instant transients.
-   **(1) book cache — SHIPPED** (`engine/bookcache.py`): verified live WS schema, applies
-   `book`/`price_change` into `dict[token_id, OrderBook]`, top-of-book integrity check + A3
-   hash-revert flag drifted tokens via `take_stale()`.
-   **(2) streaming runner — SHIPPED** (`engine/streaming.py`, `StreamingBooks`): reconnect/backoff
-   + periodic full REST resync + on-demand `take_stale()` resync (`seed()`); default OFF.
-   **(3) scanner integration — DESIGN (see committee verdict below); NOT a wiring swap.**
+3. **Websocket streaming — SHIPPED AS THE DEFAULT (2026-07-01), verified live in Docker.**
+   In-memory books from deltas: real-time detection + far less CPU/IO than re-fetching books/pass;
+   the only way to catch instant transients. **All of R1–R8 landed** — see the WS-default/R2/R5/R6/R8
+   rows in the Shipped table above. Cache (1), runner (2), and scanner integration (3, the
+   trigger→REST-confirm barrier) are all wired; `streaming_enabled=True` is the default and the REST
+   poll is the resync/backup. Committee-reviewed (all SAFE, none blocking) + 2× worktree bug-hunt;
+   the historical R1–R8 design + committee verdict below is retained for provenance. **Remaining
+   streaming polish is in Tier D-ws below** (non-blocking scaling/observability items).
 
    ### Websocket phase-3 design — committee verdict (2026-07-01)
    A 3-lens Opus committee (data-integrity · execution-realism · operational) **unanimously**
