@@ -47,7 +47,7 @@ messages. Strategy tags: **C** = complement, **B** = NegRisk basket, **D** = dep
 
 ---
 
-## ON JONATHAN'S DESK — decisions awaiting your call (blocking nothing today)
+## Open decisions (blocking nothing today)
 
 Each is implemented to a safe/conservative default; full context lives in the tier tables (one
 home per item — no duplicate prose). Awaiting only a judgment call:
@@ -68,7 +68,7 @@ home per item — no duplicate prose). Awaiting only a judgment call:
 
 ## Strategy direction — small-edge tier (DEFERRED 2026-06-30)
 
-Jonathan's instinct: as a small player, chase *volume of small REAL edges* rather than compete
+Design intent: as a small player, chase *volume of small REAL edges* rather than compete
 for big ones; the enemy is false positives, not size (filter on reality, rank on size). Sound
 in principle — but a **live recon (gasless, thresholds=1, 600 mkts, 15 passes)** showed it's
 premature *now*:
@@ -121,7 +121,7 @@ endorsed — **all three SHIPPED 2026-07-01**:
 | # | Str | Sev | Issue | Decision / direction |
 |---|-----|-----|-------|----------------------|
 | C1+ | ✶ | LOW | Optional extension of the shipped C1 dispute gate: a curated subjective-/manipulable-source denylist. | Only if a credible curated list emerges; the active-dispute signal is the real one. Don't guess categories. |
-| C2 | ✶ | — | "Risk-adjusted" ranking by clean-resolution probability `p·edge − (1−p)·loss`. | **DEFERRED (2026-06-30, Jonathan): do not implement.** It needs a void/dispute probability we can't measure (A2), and we're staying with guaranteed strategies — no probabilistic ranking for now. |
+| C2 | ✶ | — | "Risk-adjusted" ranking by clean-resolution probability `p·edge − (1−p)·loss`. | **DEFERRED (2026-06-30): do not implement.** It needs a void/dispute probability we can't measure (A2), and we're staying with guaranteed strategies — no probabilistic ranking for now. |
 
 (C4 — backtest "would-be P&L" upper-bound labelling — folded into **E1**; see Tier E and Decided/closed.)
 
@@ -148,8 +148,7 @@ scaling/observability refinements, several needing **live measurement** at the 6
 
 ## Open — Tier E: realized-outcome tracking & evaluation (added 2026-06-30)
 
-The natural next chunk *after* detection. Source: `docs/QUICK_THOUGHTS_OF_THE_DEV.md` (now
-folded here). Today we record opportunities **at detection time only** and never learn how the
+The natural next chunk *after* detection. Today we record opportunities **at detection time only** and never learn how the
 underlying markets actually resolved — so we can't compute realized P&L, audit whether
 "guaranteed" was truly guaranteed, or measure a statistical edge. **E1 is the foundation; E2/E4
 depend on it.** This is its own body of work, not a quick add.
@@ -173,7 +172,7 @@ Remaining streaming polish is non-blocking (Tier D-ws). Work the items below in 
 
 1. **Notifier wiring (Discord)** — *built.* `DiscordNotifier` (formatted embed) shipped; set
    `NOTIFIER=discord` + `NOTIFIER_URL=<channel webhook>` in the compose env so real opps actually
-   alert (spec's "→ alert" is otherwise silent). Pending only Jonathan's Discord webhook URL.
+   alert (spec's "→ alert" is otherwise silent). Pending only a configured Discord webhook URL.
    (ntfy/telegram deferred — fall back to `none`.)
 2. **Dependency-relation workflow** — *the big near-term build.* Auto-**propose** candidate
    relations from market *structure* (temporal/numeric ladders, nesting DAGs — never free-text),

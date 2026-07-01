@@ -30,7 +30,6 @@ it.
 - **`docs/STRATEGY_BACKLOG.md`** — the strategy/worklist of committee findings not yet implemented.
 - **`docs/POLYARB_DOCS.md`** — operating guide (Docker-first): how the container works, deploy, configuration, where results go, manual/local run (backup), macOS venv troubleshooting.
 - **`docs/HEDGING.md`** — partial-basket hedging design and decision menu: the model-free menu (§1–3: drop-eliminated, NO-dual, refuse) and the probabilistic-partial decision (§5, opt-in, shipped).
-- **`docs/QUICK_THOUGHTS_OF_THE_DEV.md`** — transient dev scratchpad; dump half-formed ideas here, triage into STRATEGY_BACKLOG.md, then clear.
 - **`README.md`** — the front door: overview + the Docker quick-start, pointing into POLYARB_DOCS/SPEC.
 
 When a fact about constraints/stack/math/phases changes, edit **SPEC.md** (and API_NOTES if
