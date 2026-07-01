@@ -18,6 +18,7 @@ def _opp(
     conservative: str | None = None,
     risk: ResolutionRisk = ResolutionRisk.OBJECTIVE,
     conditions: list[str] | None = None,
+    annualized: str | None = None,
 ) -> Opportunity:
     return Opportunity(
         detector=DetectorKind.COMPLEMENT,
@@ -32,7 +33,8 @@ def _opp(
         net_profit_bps=Decimal(bps),
         executable_size=Decimal(size),
         conservative_size=Decimal(conservative) if conservative is not None else None,
-        realizes="instant",
+        realizes="instant" if annualized is None else "resolution",
+        annualized=Decimal(annualized) if annualized is not None else None,
         resolution_risk=risk,
     )
 
@@ -74,6 +76,31 @@ def test_rejects_below_notional() -> None:
     filt = OpportunityFilter(_settings())
     assert filt.apply([_opp(size="10")]) == []
     assert filt.stats.below_notional == 1
+
+
+def test_annualized_gate_rejects_low_return_held_arb() -> None:
+    # 8% floor; a held arb returning 1.5%/yr (like the OpenAI basket) is dropped, size irrelevant.
+    filt = OpportunityFilter(_settings(min_annualized_return=Decimal("0.08")))
+    assert filt.apply([_opp(size="1000", annualized="0.015")]) == []
+    assert filt.stats.below_annualized == 1
+
+
+def test_annualized_gate_allows_high_return_held_arb() -> None:
+    filt = OpportunityFilter(_settings(min_annualized_return=Decimal("0.08")))
+    assert len(filt.apply([_opp(size="1000", annualized="0.20")])) == 1
+
+
+def test_annualized_gate_exempts_instant_arbs() -> None:
+    # Instant arbs have no lockup (annualized None) → never gated, even with a high floor.
+    filt = OpportunityFilter(_settings(min_annualized_return=Decimal("0.50")))
+    assert len(filt.apply([_opp(size="1000", annualized=None)])) == 1
+
+
+def test_annualized_gate_disabled_by_default() -> None:
+    # Default 0 → the gate is a no-op; a 1.5%/yr held arb passes.
+    filt = OpportunityFilter(_settings())
+    assert len(filt.apply([_opp(size="1000", annualized="0.015")])) == 1
+    assert filt.stats.below_annualized == 0
 
 
 def test_rejects_at_risk_when_configured() -> None:

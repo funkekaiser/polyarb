@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     # --- emission thresholds (the part that makes detection non-naive) ---
     min_profit_bps: Decimal = Decimal(30)
     min_notional_usdc: Decimal = Decimal(50)
+    # Annualized-return gate (floor-analysis committee 2026-07-01, rec #1). A held-to-resolution
+    # arb can show a fat per-set bps yet a sub-savings-account *annualized* return once you divide
+    # by a multi-month lockup (e.g. 75.7 bps over 183d ≈ 1.5%/yr < a savings account). This gates
+    # on `Opportunity.annualized` (a fraction: (net/cost)·365/days). Instant arbs have no lockup
+    # (annualized None) and are exempt. Default 0 = DISABLED (no behavior change); the committee's
+    # recommended production value is ~0.08-0.10 (8-10%/yr = T-bill + a void/illiquidity spread).
+    min_annualized_return: Decimal = Decimal(0)
     exclude_at_risk_resolution: bool = True
     dedupe_cooldown_seconds: float = 300.0
     # §5 — opt-in probabilistic partial basket (docs/HEDGING.md §5). OFF by default and never on

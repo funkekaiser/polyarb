@@ -61,6 +61,7 @@ class FilterStats:
     seen: int = 0
     below_profit: int = 0
     below_notional: int = 0
+    below_annualized: int = 0
     at_risk: int = 0
     deduped: int = 0
     kept: int = 0  # passed all filters (ranked + handed to emit); NOT the store/notify success
@@ -89,6 +90,18 @@ class OpportunityFilter:
         notional = opp.decision_size * opp.cost
         if notional < s.min_notional_usdc:
             self.stats.below_notional += 1
+            return False
+
+        # Annualized-return gate (committee rec #1). A held arb locking capital for months can
+        # clear the per-set bps floor yet return less than a savings account annualized. Gate on
+        # `annualized` when known; instant arbs (annualized None) have no lockup and are exempt.
+        # `> 0` guard: default 0 disables it (no behavior change).
+        if (
+            s.min_annualized_return > 0
+            and opp.annualized is not None
+            and opp.annualized < s.min_annualized_return
+        ):
+            self.stats.below_annualized += 1
             return False
 
         if s.exclude_at_risk_resolution and opp.resolution_risk == ResolutionRisk.AT_RISK:
