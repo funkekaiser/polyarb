@@ -37,12 +37,14 @@ class Settings(BaseSettings):
     # Per-execution gas (USDC), applied once per opportunity, scaled by leg count (B2'):
     #   gas = gas_estimate (fixed: merge/redeem) + gas_per_leg_estimate · N (one taker fill/leg).
     # NOTE: via Polymarket's relayer (proxy/Safe/deposit wallets) gas is RELAYER-PAID — including
-    # CTF split/merge/redeem — so the true user cost is ≈$0 (see docs/API_NOTES.md, dated). These
-    # small non-zero defaults are a conservative ceiling for the raw-EOA / relayer-cap edge; on
-    # Polygon they're pennies, negligible vs MIN_NOTIONAL. Set ~0 if you confirm relayer-only; a
-    # future dynamic gas client (use_dynamic_gas) can override from a live oracle.
-    gas_estimate: Decimal = Decimal("0.02")
-    gas_per_leg_estimate: Decimal = Decimal("0.05")
+    # CTF split/merge/redeem — so the true user cost is ≈$0 (see docs/API_NOTES.md, dated).
+    # DEFAULT = 0 (relayer reality; committee-confirmed 2026-07-01): the old 0.02/0.05 ceiling
+    # over-charged raw Polygon gas the relayer user never pays and silently suppressed real small
+    # multi-leg edges (e.g. ~104 bps on a 10-leg $50 basket) — the exact inventory the small-edge
+    # strategy wants. To re-enable a conservative raw-EOA / relayer-cap ceiling, set these back to
+    # ~0.02 / ~0.05; or flip use_dynamic_gas to price a live oracle (raw-EOA path only).
+    gas_estimate: Decimal = Decimal("0")
+    gas_per_leg_estimate: Decimal = Decimal("0")
     # When true, fetch live gas (Polygon Gas Station + POL/USD) each pass via GasClient and use
     # it instead of the static estimates above; on any oracle failure the scanner falls back to
     # the static values. Off by default — opt-in so the live dependency can't surprise a monitor.
