@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     ws_resync_interval_s: float = 60.0
     # Cap (seconds) on the exponential reconnect backoff after a WS disconnect.
     ws_max_backoff_s: float = 30.0
+    # Max inbound WS frame size (bytes). Polymarket sends the full initial-dump snapshot as one
+    # frame that scales with subscribed-token count (~1.65 MiB for ~390 tokens); the websockets
+    # library's 1 MiB default would close the connection (1009 MESSAGE_TOO_BIG) so the feed never
+    # delivers a message. Default 64 MiB — generous headroom, still bounded so a rogue frame can't
+    # OOM the process. (Verified live 2026-07-01.)
+    ws_max_message_bytes: int = 64 * 1024 * 1024
     # R5 stall watchdog: force-drop + reconnect a connection that is OPEN (TCP/ping alive) but has
     # delivered no market message for this long. Across ~160 subscribed tokens real silence this
     # long means a dead feed, so a forced reconnect+resync is cheap insurance; set generously

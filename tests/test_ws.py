@@ -53,13 +53,33 @@ class _FakeConn:
         raise StopAsyncIteration
 
 
-def _patch_connect(monkeypatch: pytest.MonkeyPatch, conn: _FakeConn) -> None:
-    def fake_connect(url: str, **_: object) -> _FakeConn:
+def _patch_connect(
+    monkeypatch: pytest.MonkeyPatch, conn: _FakeConn, captured: dict[str, Any] | None = None
+) -> None:
+    def fake_connect(url: str, **kwargs: object) -> _FakeConn:
+        if captured is not None:
+            captured.update(kwargs)
+            captured["url"] = url
         return conn
 
     monkeypatch.setattr(
         ws_mod, "websockets", type("W", (), {"connect": staticmethod(fake_connect)})
     )
+
+
+def test_connect_raises_default_frame_size_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression (live-verified 2026-07-01): the initial-dump frame for a large subscription
+    exceeds the websockets 1 MiB default, so connect() must pass a much larger max_size."""
+    conn = _FakeConn([])
+    captured: dict[str, Any] = {}
+    _patch_connect(monkeypatch, conn, captured)
+
+    async def go() -> None:
+        async for _ in MarketWebSocket().stream(["t1"]):
+            pass
+
+    asyncio.run(go())
+    assert captured.get("max_size", 0) >= 8 * 1024 * 1024, captured
 
 
 def test_initial_subscription_sent(monkeypatch: pytest.MonkeyPatch) -> None:

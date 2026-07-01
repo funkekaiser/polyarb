@@ -103,7 +103,9 @@ class StreamingBooks:
         self._tracked: set[str] = set(self._token_ids)
         self._clob = clob
         self._settings = settings
-        self._ws_factory: Callable[[], MarketWebSocket] = ws_factory or (lambda: MarketWebSocket())
+        self._ws_factory: Callable[[], MarketWebSocket] = ws_factory or (
+            lambda: MarketWebSocket(max_size=self._settings.ws_max_message_bytes)
+        )
         self._cache: OrderBookCache = cache if cache is not None else OrderBookCache()
         self._sleep = sleep
         # R6 — pending subscribe/unsubscribe ops to apply to the LIVE connection (drained by the

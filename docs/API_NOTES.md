@@ -150,6 +150,14 @@ Polymarket documentation explicitly describes a per-order minimum.
   `custom_feature_enabled` (default false).
 - Dynamic (re)subscription without reconnect:
   `{"operation": "subscribe"|"unsubscribe", "assets_ids": ["<token_id>"]}`.
+- **Initial-dump frame size (live-verified 2026-07-01):** the `initial_dump` snapshot is sent as a
+  **single frame** whose size scales with the number of subscribed tokens — measured **~1.65 MiB
+  for ~390 tokens** (~4.3 KiB/token), so the 600-market default (~1200 tokens) is several MiB. The
+  `websockets` Python library caps inbound frames at **1 MiB** by default and closes the connection
+  immediately with **1009 MESSAGE_TOO_BIG** — the feed then never delivers a message and a runner
+  silently rides on the REST-resync backup. Set `websockets.connect(max_size=...)` generously (we
+  use 64 MiB, config `WS_MAX_MESSAGE_BYTES`). Deltas (`price_change`) are small; only the initial
+  dump is large.
 
 ## ⚠️ SDK CHANGE — affects Phase 5 (execution) only
 

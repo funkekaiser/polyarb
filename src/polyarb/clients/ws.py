@@ -25,13 +25,28 @@ import websockets
 
 MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
+# The websockets library caps inbound frames at 1 MiB by default. Polymarket's market channel
+# sends the full initial-dump snapshot as ONE frame, which scales with the number of subscribed
+# tokens — ~1.65 MiB for ~390 tokens, and the 600-market default (~1200 tokens) is larger still.
+# The 1 MiB default closes the connection immediately (code 1009 MESSAGE_TOO_BIG) so the WS never
+# delivers a single message and the scanner silently rides on the REST resync backup. Raise the
+# cap generously (verified live 2026-07-01). Still bounded (not None) so a rogue frame can't OOM us.
+_DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024  # 64 MiB
+
 
 class MarketWebSocket:
     """Streams market-channel messages for a set of token_ids."""
 
-    def __init__(self, url: str = MARKET_WS_URL, *, ping_interval: float = 10.0) -> None:
+    def __init__(
+        self,
+        url: str = MARKET_WS_URL,
+        *,
+        ping_interval: float = 10.0,
+        max_size: int = _DEFAULT_MAX_MESSAGE_BYTES,
+    ) -> None:
         self._url = url
         self._ping_interval = ping_interval
+        self._max_size = max_size
 
     async def stream(
         self,
@@ -46,7 +61,9 @@ class MarketWebSocket:
         (dynamic subscribe/unsubscribe, R6) interleaved with message delivery.
         """
         subscribe = {"assets_ids": list(token_ids), "type": "market"}
-        async with websockets.connect(self._url, ping_interval=self._ping_interval) as conn:
+        async with websockets.connect(
+            self._url, ping_interval=self._ping_interval, max_size=self._max_size
+        ) as conn:
             await conn.send(json.dumps(subscribe))
             if control is None:
                 async for raw in conn:
