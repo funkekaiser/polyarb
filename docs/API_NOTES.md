@@ -155,6 +155,12 @@ Polymarket documentation explicitly describes a per-order minimum.
   last-mid landed in that band is conservatively treated as a void (triggers an E2 review alert,
   never a silently-wrong P&L). A rare `[0,0]`/malformed payload rounds both legs to 0.
 
+- **Per-order minimum size = 5 shares (VERIFIED LIVE 2026-07-01):** every live market sampled
+  (100/100) reports `orderMinSize` (→ `Market.min_order_size`) = **5**; `orderPriceMinTickSize`
+  (→ `tick_size`) is 0.001 (~94%) or 0.01. The 5-share minimum is what the D5 executability gate
+  (`enforce_min_order_size`) enforces: a basket leg placing fewer than 5 shares isn't fillable, so
+  a reported edge on it is a phantom. Redundant at the $50 floor; the safety gate for any lower floor.
+
 ## WebSocket market channel
 
 - URL: `wss://ws-subscriptions-clob.polymarket.com/ws/market`.
