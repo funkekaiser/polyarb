@@ -86,6 +86,23 @@ small transients polling misses; (b) **false-positive hardening** so a penny-edg
 eventually **automated execution** (Phase 5) — $1/min can't be hand-fired. Until then: stay on
 the sensible/"big" tier. (Memory: small-edge-strategy.)
 
+**UPDATE 2026-07-01 — floor tested against live data (`reports/floor-analysis.md`).** A ~2.5h
+read-only observation of the full 600-market board + a lowered-floor ($1) collection run + a 3-lens
+statistician committee tested "should we lower `MIN_NOTIONAL`?" **Verdict: unanimous NO.** The board
+held **one** structural arb the whole window (a ~$9.77 / 75.7 bps / 183-day / ~1.5%-yr NegRisk
+"OpenAI IPO cap" basket); the "~1,011 dropped" were re-detections of that *one* opp (pseudoreplication
+— effective n=1), and `$50→$1` revealed **no** new opps. Three durable follow-ups the committee
+endorsed (all shipped-nothing yet; ordered):
+1. **Annualized-return gate** (`min_annualized_return`, ~8–10%/yr) — the economically correct filter
+   for held-to-resolution arbs; a notional/bps floor is blind to the 183-day lockup. The `annualized`
+   field already exists. *(New — Tier C.)*
+2. **Executability gate** — gate on `conservative_size` (thinnest-leg depth) + enforce per-leg
+   min-order-size (**D5**) before trusting any basket; a persistent "76 bps" on stale, sub-minimum
+   liquidity is a *phantom* edge (false positive). Verify Polymarket's live per-leg minimum.
+3. **Shadow-ledger experiment** — a $1 log-only (read-only) floor for 2–4 weeks; measure the distinct
+   sub-$50 opp *arrival rate* via the E1 ledger, stratified by time-of-day/weekday/event-proximity.
+   Only revisit the floor if that rate clears a pre-registered threshold across ≥2 conditions.
+
 ---
 
 ## Open — Tier A: is the "guaranteed" money really safe?
