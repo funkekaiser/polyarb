@@ -4,18 +4,23 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from polyarb.models import DetectorKind, Opportunity
-from polyarb.sinks.store import SqliteStore
+from polyarb.models import DetectorKind, Leg, Opportunity
+from polyarb.sinks.store import SqliteStore, economic_fingerprint
 
 ZERO = Decimal(0)
 
 
-def _opp(description: str = "test") -> Opportunity:
+def _opp(
+    description: str = "test",
+    *,
+    condition_ids: list[str] | None = None,
+    legs: list[Leg] | None = None,
+) -> Opportunity:
     return Opportunity(
         detector=DetectorKind.COMPLEMENT,
         description=description,
-        condition_ids=["0x1"],
-        legs=[],
+        condition_ids=["0x1"] if condition_ids is None else condition_ids,
+        legs=[] if legs is None else legs,
         cost=Decimal("0.90"),
         gross_profit=Decimal("0.10"),
         fees=ZERO,
@@ -73,3 +78,64 @@ def test_context_manager_closes() -> None:
     with SqliteStore() as store:
         store.record(_opp())
         assert store.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# E1 — economic-event fingerprint + deduped realized-outcome ledger
+# ---------------------------------------------------------------------------
+
+
+def _leg(token_id: str, side: str = "buy") -> Leg:
+    return Leg(token_id=token_id, side=side, price=Decimal("0.45"), size=Decimal("100"))
+
+
+def test_fingerprint_stable_across_size_price_drift() -> None:
+    # Same structure, different sizes/prices/description → same economic event.
+    a = _opp("t1", condition_ids=["0xA", "0xB"], legs=[_leg("yA"), _leg("yB")])
+    b = _opp("t2", condition_ids=["0xB", "0xA"], legs=[_leg("yB"), _leg("yA")])
+    b.executable_size = Decimal("7")  # drift is excluded from the fingerprint
+    assert economic_fingerprint(a) == economic_fingerprint(b)
+
+
+def test_fingerprint_differs_on_condition_set_and_leg_structure() -> None:
+    base = _opp(condition_ids=["0xA"], legs=[_leg("yA")])
+    other_market = _opp(condition_ids=["0xC"], legs=[_leg("yC")])
+    other_side = _opp(condition_ids=["0xA"], legs=[_leg("yA", side="sell")])
+    assert economic_fingerprint(base) != economic_fingerprint(other_market)
+    assert economic_fingerprint(base) != economic_fingerprint(other_side)
+
+
+def test_redetections_collapse_to_one_economic_event() -> None:
+    opp = _opp(condition_ids=["0xA", "0xB"], legs=[_leg("yA"), _leg("yB")])
+    with SqliteStore() as store:
+        for _ in range(5):
+            store.record(opp)
+        assert store.count() == 5  # raw detection log keeps every pass
+        assert store.distinct_events() == 1  # ledger dedupes to one economic event
+        pending = store.pending_events()
+        assert len(pending) == 1
+        assert pending[0].detection_count == 5
+        assert pending[0].status == "pending"
+
+
+def test_distinct_condition_sets_are_separate_events() -> None:
+    with SqliteStore() as store:
+        store.record(_opp(condition_ids=["0xA"], legs=[_leg("yA")]))
+        store.record(_opp(condition_ids=["0xB"], legs=[_leg("yB")]))
+        assert store.distinct_events() == 2
+
+
+def test_record_resolution_settles_and_removes_from_pending() -> None:
+    opp = _opp(condition_ids=["0xA", "0xB"], legs=[_leg("yA"), _leg("yB")])
+    fp = economic_fingerprint(opp)
+    with SqliteStore() as store:
+        store.record(opp)
+        store.record_resolution(
+            fp,
+            status="resolved",
+            realized_payoff=Decimal("100"),
+            realized_pnl=Decimal("10"),
+            detail={"0xA": "1.0", "0xB": "0.0"},
+        )
+        assert store.pending_events() == []  # settled → no longer pending
+        assert store.distinct_events() == 1  # still tracked, just resolved
