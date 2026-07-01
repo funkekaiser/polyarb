@@ -112,6 +112,35 @@ def backtest(
 
 
 @app.command()
+def settle(
+    batch: int = typer.Option(500, help="Max pending ledger events to check this run."),
+) -> None:
+    """Poll Gamma (read-only) for the resolution of pending ledger events; record realized P&L."""
+    import asyncio
+
+    from polyarb.clients.gamma import GammaClient
+    from polyarb.config import load_settings
+    from polyarb.engine.settlement import SettlementRun, poll_settlements
+    from polyarb.sinks.store import SqliteStore
+
+    settings = load_settings()
+
+    async def _run() -> SettlementRun:
+        store = SqliteStore(settings.sqlite_path)
+        try:
+            async with GammaClient() as gamma:
+                return await poll_settlements(store, gamma, batch_limit=batch)
+        finally:
+            store.close()
+
+    result = asyncio.run(_run())
+    typer.echo(
+        f"settle: checked={result.checked} settled={result.settled} "
+        f"void={result.void} pending={result.still_pending}"
+    )
+
+
+@app.command()
 def replay(
     limit: int = typer.Option(50, help="Most recent stored opportunities to replay."),
 ) -> None:

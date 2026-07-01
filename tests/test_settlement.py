@@ -183,3 +183,21 @@ def test_poll_empty_ledger_is_a_noop() -> None:
         run = asyncio.run(poll_settlements(store, resolver))
         assert (run.checked, run.settled, run.void, run.still_pending) == (0, 0, 0, 0)
         assert resolver.asked == []  # never queried Gamma with an empty ledger
+
+
+def test_scanner_settle_pending_wires_the_poller() -> None:
+    # The scanner's slow-cadence hook drives the read-only poller against its own store + gamma.
+    from polyarb.config import Settings
+    from polyarb.engine.scanner import Scanner
+
+    opp = _opp([_leg("yA", "0.45"), _leg("nA", "0.45")])
+    opp.condition_ids = ["0xA"]
+    gamma = _FakeResolver([_resolved_market("0xA", ["yA", "nA"], ["1", "0"])])
+    store = SqliteStore()
+    store.record(opp)
+    scanner = Scanner(Settings(), gamma=gamma, clob=None, store=store)  # type: ignore[arg-type]
+    try:
+        asyncio.run(scanner._settle_pending())
+        assert store.pending_events() == []  # the pending event got settled through the scanner
+    finally:
+        store.close()

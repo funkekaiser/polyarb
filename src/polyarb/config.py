@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # --- logging / scan loop ---
     log_level: str = "INFO"
     scan_interval_seconds: float = 5.0
+    # E1 — cadence for the read-only settlement poller inside the scanner loop: poll Gamma for the
+    # resolution of pending ledger events at most this often (default 1h; 0 disables in-loop
+    # settling — use the standalone `polyarb settle` command instead). Resolutions change slowly,
+    # so a slow cadence keeps it off the latency-critical path.
+    settle_interval_seconds: float = 3600.0
 
     # --- emission thresholds (the part that makes detection non-naive) ---
     min_profit_bps: Decimal = Decimal(30)

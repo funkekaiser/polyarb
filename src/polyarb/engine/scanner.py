@@ -35,6 +35,7 @@ from polyarb.engine.bookcache import OrderBookCache
 from polyarb.engine.confirm import ConfirmContext, confirm_candidate
 from polyarb.engine.filters import DedupeCache, OpportunityFilter
 from polyarb.engine.ranking import rank
+from polyarb.engine.settlement import poll_settlements
 from polyarb.engine.streaming import StreamingBooks
 from polyarb.models import DetectorKind, Event, Market, Opportunity, OrderBook
 from polyarb.resolution.relations import (
@@ -354,6 +355,18 @@ class Scanner:
         )
         return kept
 
+    async def _settle_pending(self) -> None:
+        """Read-only: poll Gamma for the resolution of pending ledger events (E1, slow cadence)."""
+        run = await poll_settlements(self._store, self._gamma)
+        if run.checked:
+            log.info(
+                "settle_pass",
+                checked=run.checked,
+                settled=run.settled,
+                void=run.void,
+                pending=run.still_pending,
+            )
+
     async def scan_once(self) -> list[Opportunity]:
         """One REST scan pass: discover → fetch books → detect → filter/rank → emit."""
         events, markets, by_condition = await self._discover()
@@ -457,6 +470,10 @@ class Scanner:
         scan_pass = self._scan_streaming_once if self._streaming is not None else self.scan_once
 
         start = loop.time()
+        # E1 — steady-state ledger settlement runs on its own slow cadence (first fire at
+        # start + settle_interval, so short/test runs never trigger it; manual catch-up is the
+        # standalone `polyarb settle` command). last_settle is seeded to `start`.
+        last_settle = start
         attempts = 0  # scan-pass invocations (success or failure); `passes` arg bounds this
         try:
             while not stop.is_set():
@@ -473,6 +490,15 @@ class Scanner:
                 _ts = _now()
                 metrics.LAST_PASS.set(_ts)
                 _write_heartbeat(self._settings.heartbeat_path)
+                # E1 — slow-cadence, read-only settlement of the ledger. Off the latency-critical
+                # path; a failure here must never kill the scan loop.
+                settle_interval = self._settings.settle_interval_seconds
+                if settle_interval > 0 and (loop.time() - last_settle) >= settle_interval:
+                    last_settle = loop.time()
+                    try:
+                        await self._settle_pending()
+                    except Exception as exc:
+                        log.error("settle_pass_failed", error=repr(exc))
                 if passes and attempts >= passes:
                     break
                 if max_seconds is not None and (loop.time() - start) >= max_seconds:
