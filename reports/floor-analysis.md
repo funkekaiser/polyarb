@@ -105,6 +105,38 @@ There is no reading of the data under which lowering `MIN_NOTIONAL` is the right
 
 ---
 
+## 7. Addendum (2026-07-04) — the 53-hour endurance run confirms it
+
+§6.3 asked for a longer shadow-floor observation before trusting an n=1 conclusion. The first
+53 hours are in: the Docker scanner ran continuously against the same full board (read-only,
+`MIN_NOTIONAL=$50`, sub-floor candidates recorded to the E1 ledger as `shadow` observations).
+
+```
+Observation window : 2026-07-01 16:52 → 2026-07-03 22:19 UTC (~53.5h continuous, ongoing)
+Scan passes        : 29,778 (~825 books cached, one full-board pass every ~6s)
+Reliability        : 1 container run, 0 restarts; 86 WS drops — every one auto-recovered;
+                     48 transient resync fetch errors — all retried; healthcheck green throughout
+Distinct opps      : 1 — the SAME OpenAI-IPO basket (fingerprint 06d4b20f…, shadow / sub-floor)
+  visible          : continuously for the first ~6.3h of the run (4,123 passes),
+                     last seen 23:08 UTC Jul 1 — i.e. ~10.4h after this report first observed it
+  then             : repriced — zero candidates of ANY kind for the remaining ~47h
+Above-floor opps   : 0 (nothing ever cleared the $50 executable floor — or the annualized gate)
+Sub-floor arrivals : 1 distinct / 53.5h ≈ 0.45/day, and 0 NEW arrivals (n=1 Poisson — keep collecting)
+```
+
+Two committee predictions checked out against reality:
+
+- **Inference lens (§4.3):** thousands of raw detections again collapsed to **one** distinct
+  economic event, and the arrival rate of *new* sub-$50 edges over two-plus days is **zero** —
+  the "volume of small real edges" thesis keeps failing to appear.
+- **Microstructure lens (§4.2):** the "stable" edge vanished ~10 hours after first observation
+  and never returned — consistent with stale/placeholder liquidity being consumed or repriced,
+  not with a persistent free lunch nobody wants.
+
+The decision stands: **the floor stays; the shadow ledger keeps collecting.**
+
+---
+
 ## Appendix — raw statistics
 
 ```
