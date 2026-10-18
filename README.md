@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/funkekaiser/Polymarket-Arbitrage/actions/workflows/ci.yml/badge.svg)](https://github.com/funkekaiser/Polymarket-Arbitrage/actions/workflows/ci.yml)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 ![mode: read-only](https://img.shields.io/badge/mode-read--only-informational)
 
 polyarb continuously scans Polymarket for opportunities where prices break an identity that
@@ -131,4 +131,4 @@ appropriate professional advice.
 
 ## License
 
-[MIT](LICENSE) © Jonathan Funke-Kaiser
+Copyright (C) 2026 Jonathan Funke-Kaiser. Licensed under the GNU General Public License v3.0 or later; see [LICENSE](LICENSE).
